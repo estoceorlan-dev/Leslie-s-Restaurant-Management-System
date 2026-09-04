@@ -1,4 +1,6 @@
+import path from 'node:path';
 import express from 'express';
+import { config } from './config.js';
 import { db } from './database/connection.js';
 import { authenticate, requireRoles } from './middleware/auth.js';
 import { adminRouter } from './routes/admin.js';
@@ -92,6 +94,14 @@ app.get('/api/inventory-items', authenticate, requireRoles('admin'), (_request, 
 
 app.use('/api', (_request, response) => {
   response.status(404).json({ error: 'API endpoint not found.' });
+});
+
+app.use(express.static(config.clientDistPath));
+
+app.get(/^\/(?!api(?:\/|$)).*/, (_request, response, next) => {
+  response.sendFile(path.join(config.clientDistPath, 'index.html'), (error) => {
+    if (error) next(error);
+  });
 });
 
 app.use((error, _request, response, _next) => {

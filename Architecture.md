@@ -33,8 +33,9 @@ The recommended school-project setup is offline-only:
 - The React application, Express server, and SQLite database run on one computer.
 - The application is opened through a web browser.
 - Internet access is not required for normal operation.
-- If desired, other computers on the same local network may connect to the host computer.
-- The SQLite database is backed up by copying its database file while the application is stopped or through a backup function in the server.
+- Other computers on the same local network connect to the host's Express server; they do not open the SQLite file directly.
+- The production Express process serves both the React application and the API from one LAN address.
+- The SQLite database remains on the host computer's local disk and is backed up through the provided online backup command.
 
 ## Technology Stack
 
@@ -216,7 +217,8 @@ The Express server and SQLite database act as the local source of truth. If seve
 
 ## Backup and Recovery
 
-- Provide an admin action or documented procedure for copying the SQLite database.
+- Use `npm run db:backup` for a consistent online backup that includes committed WAL data.
+- Stop the application before using `npm run db:restore -- <backup-file>`; restore validates the backup and preserves the current database first.
 - Add the current date and time to backup filenames.
 - Store at least one backup outside the main project directory.
 - Test that a backup can be restored before the final demonstration.

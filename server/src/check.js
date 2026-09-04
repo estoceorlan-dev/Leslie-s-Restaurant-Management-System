@@ -1,9 +1,20 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { once } from 'node:events';
-import { app } from './app.js';
-import { db } from './database/connection.js';
-import { initializeDatabase } from './database/init.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const temporaryDirectory = fs.mkdtempSync(
+  path.join(os.tmpdir(), 'leslies-integration-check-'),
+);
+process.env.DATABASE_PATH = path.join(temporaryDirectory, 'restaurant.db');
+
+const [{ app }, { db }, { initializeDatabase }] = await Promise.all([
+  import('./app.js'),
+  import('./database/connection.js'),
+  import('./database/init.js'),
+]);
 
 const counts = initializeDatabase();
 
@@ -52,6 +63,27 @@ try {
   const healthResult = await request('/health');
   assert.equal(healthResult.response.status, 200, 'Health endpoint should return 200.');
   assert.equal(healthResult.payload.database, 'SQLite connected');
+
+  const applicationResult = await fetch(baseUrl);
+  assert.equal(applicationResult.status, 200, 'Express should serve the built React application.');
+  assert.match(
+    applicationResult.headers.get('content-type') ?? '',
+    /^text\/html/,
+    'The application entry point should be HTML.',
+  );
+  assert.match(
+    await applicationResult.text(),
+    /Leslie's Restaurant Management System/,
+    'The served HTML should be the Leslie\'s application entry point.',
+  );
+
+  const unknownApiResult = await fetch(`${baseUrl}/api/does-not-exist`);
+  assert.equal(unknownApiResult.status, 404, 'Unknown API paths should return 404.');
+  assert.match(
+    unknownApiResult.headers.get('content-type') ?? '',
+    /^application\/json/,
+    'Unknown API paths must not fall through to the React application.',
+  );
 
   const unauthorized = await request('/admin/employees');
   assert.equal(unauthorized.response.status, 401, 'Admin endpoints must require authentication.');
@@ -597,6 +629,7 @@ try {
     inventoryManagement: 'passed',
     stockMovementHistory: 'passed',
     salesAndLowStockReports: 'passed',
+    productionStaticServing: 'passed',
   });
 } finally {
   if (createdIds.inventoryItem) {
@@ -627,4 +660,5 @@ try {
     server.close((error) => (error ? reject(error) : resolve()));
   });
   db.close();
+  fs.rmSync(temporaryDirectory, { recursive: true, force: true });
 }

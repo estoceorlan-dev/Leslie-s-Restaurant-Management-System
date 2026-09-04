@@ -37,7 +37,7 @@ cd Restaurant-Management-System
 npm install
 ```
 
-Initialize the local database and start the frontend and API together:
+Initialize the local database and start the development servers:
 
 ```bash
 npm run db:init
@@ -45,6 +45,17 @@ npm run dev
 ```
 
 Open `http://localhost:5173`. The API runs at `http://localhost:3000` by default.
+
+For normal use on the restaurant network, run the production application on the
+dedicated host computer:
+
+```bash
+npm start
+```
+
+This builds the frontend, starts the shared server, and prints the addresses that other
+computers can open, such as `http://192.168.1.50:3000`. All devices use the same SQLite
+database on the host computer.
 
 ## Demo Accounts
 
@@ -74,7 +85,9 @@ The cashier and kitchen views refresh automatically so order and table status ch
 | `npm run build` | Create a production frontend build |
 | `npm run db:init` | Create the SQLite schema and seed local demonstration data |
 | `npm run check` | Build the frontend and run the server integration checks |
-| `npm start` | Start only the Express API |
+| `npm start` | Build and start the complete application for the local network |
+| `npm run db:backup` | Create a consistent, timestamped SQLite backup |
+| `npm run db:restore -- <file>` | Restore a validated backup while the server is stopped |
 
 ## Configuration
 
@@ -82,10 +95,33 @@ The server accepts these optional environment variables:
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `HOST` | `0.0.0.0` | Network interface used by the production server |
 | `PORT` | `3000` | Express API port |
 | `DATABASE_PATH` | `server/data/restaurant.db` | SQLite database file location |
 
 The Vite development server proxies `/api` requests to `http://localhost:3000`. If the API port changes, update the proxy target in `client/vite.config.js` as well.
+
+## Local Network Setup
+
+Use one dedicated Windows computer as the host. Install Node.js and this project only on
+that computer, connect it to the restaurant's private network, then run `npm start` from
+the project directory. Keep the terminal open while the application is in use and stop it
+safely with `Ctrl+C`.
+
+On every other computer, open one of the LAN addresses printed by the server. For a stable
+address, reserve the host computer's IPv4 address in the router's DHCP settings or use a
+hostname that the other computers can resolve.
+
+If Windows asks for network access, allow Node.js on **Private networks** only. Otherwise,
+create an inbound Windows Firewall rule for TCP port `3000` on the Private profile. Do not
+enable router port forwarding or expose this HTTP application to the public internet.
+
+If a client cannot connect, confirm that:
+
+- The host and client are connected to the same private network.
+- `npm start` is still running on the host.
+- The client is using the printed LAN address, not `localhost`.
+- Windows Firewall permits TCP port `3000` on the Private profile.
 
 ## Project Structure
 
@@ -111,6 +147,35 @@ The Vite development server proxies `/api` requests to `http://localhost:3000`. 
 The SQLite database is created at `server/data/restaurant.db`. Database files, journals, backups, dependencies, generated builds, logs, and local environment files are intentionally excluded from Git.
 
 `npm run db:init` is safe to run more than once: it creates the schema and inserts missing seed records without duplicating existing records.
+
+SQLite is sufficient for the intended small LAN installation because only the Express
+server opens the database file. Client computers communicate with Express over HTTP and
+must never open, copy, or place `restaurant.db` on a shared network drive.
+
+Create a backup at any time, including while the server is running:
+
+```bash
+npm run db:backup
+```
+
+The default destination is `server/data/backups/restaurant-backup-<timestamp>.db`. To use
+another folder or exact `.db` filename, pass it after `--`:
+
+```bash
+npm run db:backup -- D:\LesliesBackups
+npm run db:backup -- D:\LesliesBackups\friday-closing.db
+```
+
+Store at least one current backup outside the project directory. To restore, first stop
+the server with `Ctrl+C`, then run:
+
+```bash
+npm run db:restore -- D:\LesliesBackups\friday-closing.db
+```
+
+Restore validates the backup before making changes and saves the current database under
+`server/data/backups/before-restore-<timestamp>.db`. A running server, corrupt SQLite file,
+or database without the required application tables is rejected.
 
 ## Verification
 

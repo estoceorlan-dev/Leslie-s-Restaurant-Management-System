@@ -8,14 +8,14 @@ Leslie's Restaurant Management System
 
 The project will be developed as a small, offline restaurant-management web application. Work will be divided into short phases so that each major feature can be demonstrated and tested before the next phase begins.
 
-The initial version will use React, Node.js, Express, and SQLite. It will run on one local computer and will not require an internet connection.
+The initial version uses React, Node.js, Express, and SQLite. One dedicated local computer hosts the application and database, and staff computers on the same private network connect through their browsers without requiring internet access.
 
 ## Current Implementation Status
 
 | Phase | Status | Completed Output |
 |---|---|---|
 | Phase 1: Requirements and Planning | Complete | Scope, numbered requirements, business rules, Mermaid diagrams, and wireframes in `docs/` |
-| Phase 2: Project and Database Setup | Complete | React/Vite frontend, Express API, SQLite schema, seed data, starter endpoints, and verification script |
+| Phase 2: Project and Database Setup | Complete | React/Vite frontend, LAN-facing Express application/API, persistent SQLite schema and seed data, backup/restore commands, and verification scripts |
 | Phase 3: Login and Administration | Complete | Employee login/logout, SQLite-backed sessions, server-enforced roles, role-aware navigation, and employee, category, menu-item, and table management |
 | Phase 4: Ordering and Cashier Module | Complete | Dine-in/takeout ordering, item quantities and notes, table validation, server-calculated totals and change, cash/GCash/Maya records, printable receipts, and order history |
 | Phase 5: Kitchen and Table Workflow | Complete | Auto-refreshing kitchen queue, guarded order-status controls, cashier status notifications, and transactional table occupancy/release |
