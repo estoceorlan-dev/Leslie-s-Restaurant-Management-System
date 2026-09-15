@@ -60,6 +60,7 @@ export function AppShell({ user, activePage, onNavigate, onLogout, children }) {
               type="button"
               className={activePage === item.id ? 'nav-item nav-item--active' : 'nav-item'}
               onClick={() => onNavigate(item.id)}
+              aria-current={activePage === item.id ? 'page' : undefined}
             >
               <NavIcon name={item.icon} />
               {item.label}

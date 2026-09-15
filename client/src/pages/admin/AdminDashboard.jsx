@@ -10,6 +10,16 @@ function localDateValue(date = new Date()) {
   return `${year}-${month}-${day}`;
 }
 
+function SummaryIcon({ name }) {
+  const paths = {
+    sales: <><path d="M4 19V9m6 10V5m6 14v-7m4 7H2" /><path d="m4 6 5-3 5 3 6-4" /></>,
+    orders: <><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3Z" /><path d="M9 8h6m-6 4h6" /></>,
+    stock: <><path d="M4 7h16v13H4V7Z" /><path d="M3 4h18v3H3V4Zm5 7h8" /></>,
+    menu: <><path d="M4 6h16M4 12h16M4 18h16" /><circle cx="7" cy="6" r="1" /><circle cx="7" cy="12" r="1" /><circle cx="7" cy="18" r="1" /></>,
+  };
+  return <svg viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
+}
+
 export function AdminDashboard({ user, onNavigate }) {
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState('');
@@ -26,10 +36,10 @@ export function AdminDashboard({ user, onNavigate }) {
   }, []);
 
   const cards = [
-    { label: "Today's sales", value: summary ? formatCurrency(summary.sales.summary.total_sales_cents) : null, target: 'reports', accent: 'green' },
-    { label: 'Completed orders', value: summary?.sales.summary.completed_orders, target: 'reports', accent: 'blue' },
-    { label: 'Low-stock items', value: summary?.inventory.summary.low_stock_items, target: 'inventory', accent: 'clay' },
-    { label: 'Active menu items', value: summary?.menuItems.filter((item) => item.is_active).length, target: 'menu', accent: 'gold' },
+    { label: "Today's sales", value: summary ? formatCurrency(summary.sales.summary.total_sales_cents) : null, target: 'reports', accent: 'green', icon: 'sales' },
+    { label: 'Completed orders', value: summary?.sales.summary.completed_orders, target: 'reports', accent: 'blue', icon: 'orders' },
+    { label: 'Low-stock items', value: summary?.inventory.summary.low_stock_items, target: 'inventory', accent: 'clay', icon: 'stock' },
+    { label: 'Active menu items', value: summary?.menuItems.filter((item) => item.is_active).length, target: 'menu', accent: 'gold', icon: 'menu' },
   ];
   const lowStock = summary?.inventory.items.filter((item) => item.is_low_stock).slice(0, 5) ?? [];
   const bestSellers = summary?.sales.best_sellers.slice(0, 5) ?? [];
@@ -50,7 +60,7 @@ export function AdminDashboard({ user, onNavigate }) {
       <section className="summary-grid" aria-label="Restaurant setup summary">
         {cards.map((card) => (
           <button className="summary-card" type="button" key={card.label} onClick={() => onNavigate(card.target)}>
-            <span className={`summary-icon summary-icon--${card.accent}`} aria-hidden="true" />
+            <span className={`summary-icon summary-icon--${card.accent}`}><SummaryIcon name={card.icon} /></span>
             <span><small>{card.label}</small><strong>{card.value ?? '—'}</strong></span>
             <span className="card-arrow">→</span>
           </button>
