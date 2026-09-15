@@ -37,35 +37,41 @@ cd Restaurant-Management-System
 npm install
 ```
 
-Initialize the local database and start the development servers:
+Initialize the local database, create the first administrator, and start the development servers:
 
 ```bash
 npm run db:init
+npm run admin:create
 npm run dev
 ```
 
 Open `http://localhost:5173`. The API runs at `http://localhost:3000` by default.
 
-For normal use on the restaurant network, run the production application on the
-dedicated host computer:
+For normal use on the restaurant network, build and run the production application on
+the dedicated host computer:
 
 ```bash
-npm start
+npm run build
+npm run start:production
 ```
 
-This builds the frontend, starts the shared server, and prints the addresses that other
-computers can open, such as `http://192.168.1.50:3000`. All devices use the same SQLite
-database on the host computer.
+The server prints the addresses that other computers can open, such as
+`http://192.168.1.50:3000`. All devices use the same SQLite database on the host computer.
+See the [production deployment guide](docs/production-deployment.md) before installing
+the application for restaurant use.
 
-## Demo Accounts
+## First Administrator
 
-| Role | Username | Password | Primary workspace |
-|---|---|---|---|
-| Administrator | `admin` | `demo123` | Administration, inventory, and reports |
-| Cashier | `cashier` | `demo123` | Orders, payments, receipts, and order history |
-| Kitchen staff | `kitchen` | `demo123` | Kitchen queue and order preparation |
+No accounts or restaurant records are created automatically. Run the following command
+once on the host computer and enter the administrator name, username, and a unique
+password when prompted:
 
-Dedicated test accounts are also seeded as `test_admin`, `test_cashier`, and `test_kitchen`, each with the password `test123`. These credentials are for local development and classroom demonstrations only; do not use them in production.
+```bash
+npm run admin:create
+```
+
+The password is masked while it is entered. After the first account exists, create all
+additional administrator, cashier, and kitchen accounts from the Employees screen.
 
 ## Application Workflow
 
@@ -75,7 +81,9 @@ Dedicated test accounts are also seeded as `test_admin`, `test_cashier`, and `te
 4. Completed dine-in orders release their assigned tables automatically.
 5. Administrators review inventory movements and reports for completed sales.
 
-The cashier and kitchen views refresh automatically so order and table status changes appear without a manual reload.
+The cashier and kitchen views refresh automatically so menu, order, and table changes
+appear without a manual reload. Returning focus to the cashier window also triggers an
+immediate refresh.
 
 ## Useful Commands
 
@@ -83,30 +91,34 @@ The cashier and kitchen views refresh automatically so order and table status ch
 |---|---|
 | `npm run dev` | Start the Vite frontend and Express API in development mode |
 | `npm run build` | Create a production frontend build |
-| `npm run db:init` | Create the SQLite schema and seed local demonstration data |
+| `npm run db:init` | Create or update the empty SQLite schema without adding accounts or restaurant records |
+| `npm run admin:create` | Securely create the first administrator in an empty database |
 | `npm run check` | Build the frontend and run the server integration checks |
 | `npm start` | Build and start the complete application for the local network |
+| `npm run start:production` | Start an already-built production application |
 | `npm run db:backup` | Create a consistent, timestamped SQLite backup |
 | `npm run db:restore -- <file>` | Restore a validated backup while the server is stopped |
 
 ## Configuration
 
-The server accepts these optional environment variables:
+Copy `.env.example` to `.env` on the production host and adjust it for that computer.
+The server accepts these environment variables:
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `HOST` | `0.0.0.0` | Network interface used by the production server |
 | `PORT` | `3000` | Express API port |
-| `DATABASE_PATH` | `server/data/restaurant.db` | SQLite database file location |
+| `DATABASE_PATH` | `server/data/restaurant.db` | SQLite database file location; use a durable path outside the source checkout in production |
 
 The Vite development server proxies `/api` requests to `http://localhost:3000`. If the API port changes, update the proxy target in `client/vite.config.js` as well.
 
 ## Local Network Setup
 
 Use one dedicated Windows computer as the host. Install Node.js and this project only on
-that computer, connect it to the restaurant's private network, then run `npm start` from
-the project directory. Keep the terminal open while the application is in use and stop it
-safely with `Ctrl+C`.
+that computer, connect it to the restaurant's private network, build the application, and
+run `npm run start:production` from the project directory. Stop it safely with `Ctrl+C`.
+For unattended startup and restart behavior, follow the Windows Task Scheduler procedure
+in the production deployment guide.
 
 On every other computer, open one of the LAN addresses printed by the server. For a stable
 address, reserve the host computer's IPv4 address in the router's DHCP settings or use a
@@ -134,7 +146,7 @@ If a client cannot connect, confirm that:
 |       `-- services/       API client
 |-- server/                 Express and SQLite backend
 |   `-- src/
-|       |-- database/       Schema, connection, and seed logic
+|       |-- database/       Schema, connection, bootstrap, backup, and restore logic
 |       |-- middleware/     Authentication and authorization
 |       `-- routes/         REST API route modules
 |-- docs/                   Scope, requirements, diagrams, and wireframes
@@ -146,7 +158,8 @@ If a client cannot connect, confirm that:
 
 The SQLite database is created at `server/data/restaurant.db`. Database files, journals, backups, dependencies, generated builds, logs, and local environment files are intentionally excluded from Git.
 
-`npm run db:init` is safe to run more than once: it creates the schema and inserts missing seed records without duplicating existing records.
+`npm run db:init` is safe to run more than once: it applies the schema and reconciles
+table occupancy without inserting users or business data.
 
 SQLite is sufficient for the intended small LAN installation because only the Express
 server opens the database file. Client computers communicate with Express over HTTP and
@@ -193,6 +206,7 @@ The check builds the React application and verifies authentication, role permiss
 - [System requirements](docs/requirements.md)
 - [System diagrams](docs/system-diagrams.md)
 - [Initial wireframes](docs/wireframes.md)
+- [Production deployment guide](docs/production-deployment.md)
 - [Architecture](Architecture.md)
 - [Project goals](goals.md)
 - [Implementation phases](implementation-phases.md)

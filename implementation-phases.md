@@ -15,7 +15,7 @@ The initial version uses React, Node.js, Express, and SQLite. One dedicated loca
 | Phase | Status | Completed Output |
 |---|---|---|
 | Phase 1: Requirements and Planning | Complete | Scope, numbered requirements, business rules, Mermaid diagrams, and wireframes in `docs/` |
-| Phase 2: Project and Database Setup | Complete | React/Vite frontend, LAN-facing Express application/API, persistent SQLite schema and seed data, backup/restore commands, and verification scripts |
+| Phase 2: Project and Database Setup | Complete | React/Vite frontend, LAN-facing Express application/API, persistent empty SQLite schema, secure administrator bootstrap, backup/restore commands, and verification scripts |
 | Phase 3: Login and Administration | Complete | Employee login/logout, SQLite-backed sessions, server-enforced roles, role-aware navigation, and employee, category, menu-item, and table management |
 | Phase 4: Ordering and Cashier Module | Complete | Dine-in/takeout ordering, item quantities and notes, table validation, server-calculated totals and change, cash/GCash/Maya records, printable receipts, and order history |
 | Phase 5: Kitchen and Table Workflow | Complete | Auto-refreshing kitchen queue, guarded order-status controls, cashier status notifications, and transactional table occupancy/release |
@@ -55,7 +55,7 @@ The completed foundation through Phase 6 can be verified at any time by running 
 - Create the Node.js and Express server.
 - Configure SQLite and the selected ORM or database library.
 - Create the initial database schema.
-- Add sample employee, menu, table, and inventory data.
+- Add disposable employee, menu, table, and inventory fixtures to the automated checks.
 - Establish the basic frontend and backend folder structure.
 
 ### Deliverables
@@ -63,11 +63,11 @@ The completed foundation through Phase 6 can be verified at any time by running 
 - Running React frontend
 - Running Express API
 - Connected SQLite database
-- Initial database tables and sample records
+- Initial database tables and secure first-administrator command
 
 ### Completion Criteria
 
-- The frontend can request and display test data from the backend.
+- Automated checks can request and display disposable data from a temporary database.
 - Data remains available after the application is restarted.
 
 ## Phase 3: Login and Administration
@@ -203,14 +203,14 @@ Automatic ingredient deduction from recipes will be treated as an optional enhan
 ### Activities
 
 - Create a local database-backup function or documented backup procedure.
-- Prepare sample data for the presentation.
+- Document how to use a separate disposable database for presentations.
 - Complete the user manual and technical documentation.
 
 ### Deliverables
 
 - User manual
 - Technical documentation
-- Demonstration data and presentation flow
+- Presentation flow and disposable staging-data procedure
 
 ### Completion Criteria
 

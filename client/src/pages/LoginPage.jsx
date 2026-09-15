@@ -78,7 +78,7 @@ export function LoginPage({ onLogin }) {
           <button className="primary-button login-submit" type="submit" disabled={loading}>
             {loading ? 'Signing in…' : 'Sign in'}
           </button>
-          <p className="login-help">Demo accounts use the password <strong>demo123</strong>.</p>
+          <p className="login-help">Contact an administrator if you need an account or password reset.</p>
         </form>
       </section>
     </main>

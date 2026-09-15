@@ -10,23 +10,123 @@ const temporaryDirectory = fs.mkdtempSync(
 );
 process.env.DATABASE_PATH = path.join(temporaryDirectory, 'restaurant.db');
 
-const [{ app }, { db }, { initializeDatabase }] = await Promise.all([
+const [
+  { app },
+  { db },
+  { databaseCounts, initializeDatabase },
+  { createInitialAdmin },
+  { assertProductionReady },
+  { config },
+] = await Promise.all([
   import('./app.js'),
   import('./database/connection.js'),
   import('./database/init.js'),
+  import('./database/create-admin.js'),
+  import('./production-readiness.js'),
+  import('./config.js'),
 ]);
 
-const counts = initializeDatabase();
+const emptyCounts = initializeDatabase();
+assert.deepEqual(
+  emptyCounts,
+  {
+    users: 0,
+    authSessions: 0,
+    categories: 0,
+    menuItems: 0,
+    tables: 0,
+    orders: 0,
+    orderItems: 0,
+    inventoryItems: 0,
+    stockMovements: 0,
+  },
+  'Production initialization must create an empty database.',
+);
+assert.deepEqual(
+  initializeDatabase(),
+  emptyCounts,
+  'Production initialization must remain empty when repeated.',
+);
+assert.throws(
+  () => assertProductionReady(db, temporaryDirectory),
+  /production frontend is missing/,
+  'Production startup must explain how to build a missing frontend.',
+);
+assert.throws(
+  () => assertProductionReady(db, config.clientDistPath),
+  /No active administrator/,
+  'Production startup must explain how to bootstrap an empty database.',
+);
 
-assert.ok(counts.users >= 6, 'Expected demo and test accounts for all three roles.');
-assert.ok(counts.menuItems >= 6, 'Expected at least six seeded menu items.');
-assert.ok(counts.tables >= 6, 'Expected at least six seeded tables.');
-assert.ok(counts.inventoryItems >= 3, 'Expected at least three seeded inventory items.');
+const CHECK_PASSWORD = 'Check-only-password-2026';
+const initialAdmin = createInitialAdmin(db, {
+  name: 'Integration Administrator',
+  username: 'check_admin',
+  password: CHECK_PASSWORD,
+});
+assert.equal(initialAdmin.role, 'admin');
+assert.notEqual(
+  db.prepare('SELECT password_hash FROM users WHERE id = ?').get(initialAdmin.id).password_hash,
+  CHECK_PASSWORD,
+  'The bootstrap password must only be stored as a hash.',
+);
+assert.throws(
+  () => createInitialAdmin(db, {
+    name: 'Second Administrator',
+    username: 'second_admin',
+    password: CHECK_PASSWORD,
+  }),
+  /account already exists/,
+  'The first-administrator command must disable itself after bootstrap.',
+);
+
+db.transaction(() => {
+  const insertUser = db.prepare(`
+    INSERT INTO users (name, username, password_hash, role)
+    VALUES (?, ?, ?, ?)
+  `);
+  const passwordHash = db.prepare(
+    'SELECT password_hash FROM users WHERE id = ?',
+  ).get(initialAdmin.id).password_hash;
+  insertUser.run('Integration Cashier', 'check_cashier', passwordHash, 'cashier');
+  insertUser.run('Integration Kitchen Staff', 'check_kitchen', passwordHash, 'kitchen');
+
+  const categoryId = db.prepare(
+    'INSERT INTO categories (name) VALUES (?)',
+  ).run('Integration Meals').lastInsertRowid;
+  const insertMenuItem = db.prepare(`
+    INSERT INTO menu_items (category_id, name, price_cents)
+    VALUES (?, ?, ?)
+  `);
+  insertMenuItem.run(categoryId, 'Integration Meal A', 12000);
+  insertMenuItem.run(categoryId, 'Integration Meal B', 7500);
+  db.prepare(
+    'INSERT INTO restaurant_tables (table_number, capacity) VALUES (1, 4)',
+  ).run();
+  db.prepare(`
+    INSERT INTO inventory_items (name, unit, quantity, low_stock_level)
+    VALUES ('Integration Supply', 'units', 1, 2)
+  `).run();
+})();
+
+const counts = databaseCounts();
+assert.equal(counts.users, 3, 'Disposable checks should cover all three roles.');
+assert.equal(counts.menuItems, 2, 'Disposable checks require two orderable items.');
+assert.equal(counts.tables, 1, 'Disposable checks require an available table.');
+assert.equal(counts.inventoryItems, 1, 'Disposable checks require an inventory item.');
+assert.doesNotThrow(
+  () => assertProductionReady(db, config.clientDistPath),
+  'A built application with an active administrator should be production-ready.',
+);
+assert.doesNotThrow(
+  () => assertProductionReady(db, temporaryDirectory, { requireClientBuild: false }),
+  'Development startup should use Vite without requiring a production frontend build.',
+);
 
 const lowStockItems = db.prepare(
   'SELECT COUNT(*) AS count FROM inventory_items WHERE quantity <= low_stock_level',
 ).get().count;
-assert.ok(lowStockItems >= 1, 'Expected at least one seeded low-stock item.');
+assert.ok(lowStockItems >= 1, 'Expected at least one check-only low-stock item.');
 
 const server = app.listen(0, '127.0.0.1');
 await once(server, 'listening');
@@ -50,7 +150,7 @@ try {
     return { response, payload };
   };
 
-  const login = async (username, password = 'demo123') => {
+  const login = async (username, password = CHECK_PASSWORD) => {
     const result = await request('/auth/login', {
       method: 'POST',
       body: { username, password },
@@ -90,24 +190,15 @@ try {
 
   const failedLogin = await request('/auth/login', {
     method: 'POST',
-    body: { username: 'admin', password: 'incorrect' },
+    body: { username: 'check_admin', password: 'incorrect' },
   });
   assert.equal(failedLogin.response.status, 401, 'Incorrect credentials must be rejected.');
 
-  const adminSession = await login('admin');
+  const adminSession = await login('check_admin');
   assert.equal(adminSession.user.role, 'admin');
-  const cashierSession = await login('cashier');
-
-  const testSessions = await Promise.all([
-    login('test_admin', 'test123'),
-    login('test_cashier', 'test123'),
-    login('test_kitchen', 'test123'),
-  ]);
-  assert.deepEqual(
-    testSessions.map((session) => session.user.role),
-    ['admin', 'cashier', 'kitchen'],
-    'Dedicated test accounts should cover all three roles.',
-  );
+  const cashierSession = await login('check_cashier');
+  const kitchenSession = await login('check_kitchen');
+  assert.equal(kitchenSession.user.role, 'kitchen');
 
   const forbidden = await request('/admin/employees', { token: cashierSession.token });
   assert.equal(forbidden.response.status, 403, 'Cashiers must not access administration endpoints.');
@@ -191,7 +282,7 @@ try {
   );
 
   const kitchenOrderDenied = await request('/orders', {
-    token: testSessions[2].token,
+    token: kitchenSession.token,
     method: 'POST',
     body: {
       order_type: 'takeout',
@@ -324,7 +415,7 @@ try {
     digitalOrders.push(digitalOrder.payload.data);
   }
 
-  const kitchenToken = testSessions[2].token;
+  const kitchenToken = kitchenSession.token;
   const kitchenQueue = await request('/kitchen/orders', { token: kitchenToken });
   assert.equal(kitchenQueue.response.status, 200, 'Kitchen staff should view the active queue.');
   assert.ok(
@@ -497,7 +588,7 @@ try {
 
   const inventoryDenied = await request('/inventory/items', { token: cashierSession.token });
   assert.equal(inventoryDenied.response.status, 403, 'Cashiers must not read admin inventory data.');
-  const reportsDenied = await request('/reports/sales', { token: testSessions[2].token });
+  const reportsDenied = await request('/reports/sales', { token: kitchenSession.token });
   assert.equal(reportsDenied.response.status, 403, 'Kitchen staff must not read admin reports.');
 
   const inventoryItem = await request('/inventory/items', {

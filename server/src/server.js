@@ -1,6 +1,7 @@
 import os from 'node:os';
 import { config } from './config.js';
 import { acquireServerLock } from './database/server-lock.js';
+import { assertProductionReady } from './production-readiness.js';
 
 function accessibleUrls() {
   if (config.host !== '0.0.0.0' && config.host !== '::') {
@@ -20,6 +21,7 @@ function accessibleUrls() {
 }
 
 async function startServer() {
+  const productionMode = process.argv.includes('--production');
   const releaseServerLock = acquireServerLock(config.databasePath);
   let db;
   let server;
@@ -32,6 +34,9 @@ async function startServer() {
       import('./database/init.js'),
     ]);
     initializeDatabase();
+    assertProductionReady(db, config.clientDistPath, {
+      requireClientBuild: productionMode,
+    });
 
     server = app.listen({ host: config.host, port: config.port });
     await new Promise((resolve, reject) => {

@@ -257,6 +257,8 @@ h1, h2, h3, p { margin-top: 0; }
 .empty-cart strong { color: #536159; font-size: .78rem; }
 .empty-cart p { margin: .25rem 0 0; font-size: .67rem; }
 .cart-line { padding: .85rem 1rem; border-bottom: 1px solid #ebeae5; }
+.cart-line--unavailable { background: #fff3f1; }
+.cart-line--unavailable .cart-line-main small { color: var(--danger); font-weight: 700; }
 .cart-line-main { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
 .cart-line-main strong, .cart-line-main small { display: block; }
 .cart-line-main strong { font-size: .77rem; }

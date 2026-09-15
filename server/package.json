@@ -4,11 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/server.js",
-    "start": "node src/server.js",
-    "db:init": "node src/database/init.js",
-    "db:backup": "node src/database/backup.js",
-    "db:restore": "node src/database/restore.js",
+    "dev": "node --env-file-if-exists=../.env --watch src/server.js",
+    "start": "node --env-file-if-exists=../.env src/server.js --production",
+    "start:production": "node --env-file-if-exists=../.env src/server.js --production",
+    "admin:create": "node --env-file-if-exists=../.env src/database/create-admin.js",
+    "db:init": "node --env-file-if-exists=../.env src/database/init.js",
+    "db:backup": "node --env-file-if-exists=../.env src/database/backup.js",
+    "db:restore": "node --env-file-if-exists=../.env src/database/restore.js",
     "check": "node src/check.js && node src/database/maintenance-check.js"
   },
   "dependencies": {

@@ -119,7 +119,7 @@ The completed project should allow users to:
 
 - Separate the React interface, Express API, and database logic.
 - Use readable names and reusable components.
-- Document installation, sample accounts, and normal workflows.
+- Document installation, secure account bootstrap, and normal workflows.
 
 ## Success Criteria
 

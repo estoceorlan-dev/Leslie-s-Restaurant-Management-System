@@ -26,6 +26,15 @@ export function CashierOrderPage({ onViewHistory }) {
   const [notice, setNotice] = useState('');
   const [receipt, setReceipt] = useState(null);
 
+  const applyMenuUpdate = (menu) => {
+    setMenuItems(menu);
+    setCategory((current) => (
+      current === 'all' || menu.some((item) => item.category_name === current)
+        ? current
+        : 'all'
+    ));
+  };
+
   const loadSetup = async () => {
     setLoading(true);
     try {
@@ -33,7 +42,7 @@ export function CashierOrderPage({ onViewHistory }) {
         api.availableMenu(),
         api.availableTables(),
       ]);
-      setMenuItems(menu);
+      applyMenuUpdate(menu);
       setTables(restaurantTables);
     } catch (requestError) {
       setError(requestError.message);
@@ -45,18 +54,62 @@ export function CashierOrderPage({ onViewHistory }) {
   useEffect(() => { loadSetup(); }, []);
 
   useEffect(() => {
-    const refreshTables = () => {
-      api.availableTables().then(setTables).catch(() => {
-        // The regular page error remains reserved for actions the cashier initiated.
-      });
+    let active = true;
+    const refreshSetup = () => {
+      Promise.all([api.availableMenu(), api.availableTables()])
+        .then(([menu, restaurantTables]) => {
+          if (!active) return;
+          applyMenuUpdate(menu);
+          setTables(restaurantTables);
+        }).catch(() => {
+          // The regular page error remains reserved for actions the cashier initiated.
+        });
     };
-    const interval = window.setInterval(refreshTables, 5000);
-    window.addEventListener('leslies:order-status-changed', refreshTables);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') refreshSetup();
+    };
+    const interval = window.setInterval(refreshSetup, 5000);
+    window.addEventListener('focus', refreshSetup);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    window.addEventListener('leslies:order-status-changed', refreshSetup);
     return () => {
+      active = false;
       window.clearInterval(interval);
-      window.removeEventListener('leslies:order-status-changed', refreshTables);
+      window.removeEventListener('focus', refreshSetup);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+      window.removeEventListener('leslies:order-status-changed', refreshSetup);
     };
   }, []);
+
+  useEffect(() => {
+    if (loading) return;
+    const currentMenu = new Map(menuItems.map((item) => [item.id, item]));
+    setCart((current) => {
+      let changed = false;
+      const next = current.map((line) => {
+        const latest = currentMenu.get(line.id);
+        if (!latest) {
+          if (line.is_unavailable) return line;
+          changed = true;
+          return { ...line, is_unavailable: true };
+        }
+        if (
+          !line.is_unavailable
+          && line.name === latest.name
+          && line.price_cents === latest.price_cents
+          && line.category_name === latest.category_name
+        ) return line;
+        changed = true;
+        return {
+          ...latest,
+          quantity: line.quantity,
+          notes: line.notes,
+          is_unavailable: false,
+        };
+      });
+      return changed ? next : current;
+    });
+  }, [loading, menuItems]);
 
   const categories = useMemo(
     () => [...new Set(menuItems.map((item) => item.category_name))],
@@ -77,6 +130,7 @@ export function CashierOrderPage({ onViewHistory }) {
     : Math.round(Number(cashReceived) * 100);
   const changeCents = Math.max(0, amountReceivedCents - subtotalCents);
   const availableTables = tables.filter((table) => table.status === 'available');
+  const cartHasUnavailableItems = cart.some((item) => item.is_unavailable);
 
   const addItem = (menuItem) => {
     setCart((current) => {
@@ -117,6 +171,9 @@ export function CashierOrderPage({ onViewHistory }) {
     setNotice('');
 
     if (cart.length === 0) return setError('Add at least one menu item to the order.');
+    if (cartHasUnavailableItems) {
+      return setError('Remove unavailable menu items before confirming the order.');
+    }
     if (orderType === 'dine_in' && !tableId) return setError('Select a table for the dine-in order.');
     if (paymentMethod === 'cash' && amountReceivedCents < subtotalCents) {
       return setError('Cash received must cover the order total.');
@@ -186,8 +243,8 @@ export function CashierOrderPage({ onViewHistory }) {
           <header className="cart-header"><div><p className="eyebrow">Current order</p><h3>{cart.reduce((total, item) => total + item.quantity, 0)} items</h3></div>{cart.length > 0 && <button type="button" onClick={() => setCart([])}>Clear</button>}</header>
 
           <div className="cart-lines">
-            {cart.length === 0 ? <div className="empty-cart"><span>+</span><strong>Your order is empty</strong><p>Select menu items to add them here.</p></div> : cart.map((item) => <article className="cart-line" key={item.id}>
-              <div className="cart-line-main"><div><strong>{item.name}</strong><small>{formatCurrency(item.price_cents)} each</small></div><b>{formatCurrency(item.price_cents * item.quantity)}</b></div>
+            {cart.length === 0 ? <div className="empty-cart"><span>+</span><strong>Your order is empty</strong><p>Select menu items to add them here.</p></div> : cart.map((item) => <article className={`cart-line${item.is_unavailable ? ' cart-line--unavailable' : ''}`} key={item.id}>
+              <div className="cart-line-main"><div><strong>{item.name}</strong><small>{item.is_unavailable ? 'No longer available — remove this item' : `${formatCurrency(item.price_cents)} each`}</small></div><b>{formatCurrency(item.price_cents * item.quantity)}</b></div>
               <div className="cart-line-controls"><div className="quantity-control"><button type="button" aria-label={`Decrease ${item.name}`} onClick={() => updateQuantity(item.id, item.quantity - 1)}>−</button><span>{item.quantity}</span><button type="button" aria-label={`Increase ${item.name}`} onClick={() => updateQuantity(item.id, item.quantity + 1)}>+</button></div><button className="remove-line" type="button" onClick={() => updateQuantity(item.id, 0)}>Remove</button></div>
               <input className="item-note-input" value={item.notes} onChange={(event) => updateNotes(item.id, event.target.value)} maxLength="250" placeholder="Add an item note (optional)" />
             </article>)}
@@ -198,7 +255,7 @@ export function CashierOrderPage({ onViewHistory }) {
             <fieldset className="payment-selector"><legend>Payment method</legend><div>{paymentOptions.map((option) => <label className={paymentMethod === option.id ? 'active' : ''} key={option.id}><input type="radio" name="payment" value={option.id} checked={paymentMethod === option.id} onChange={() => setPaymentMethod(option.id)} /><strong>{option.label}</strong><small>{option.detail}</small></label>)}</div></fieldset>
             {paymentMethod === 'cash' && <div className="cash-payment"><label className="form-field"><span>Cash received (₱)</span><input type="number" min="0" step="0.01" value={cashReceived} onChange={(event) => setCashReceived(event.target.value)} placeholder="0.00" /></label><div><span>Change</span><strong>{formatCurrency(changeCents)}</strong></div></div>}
             {paymentMethod !== 'cash' && <div className="digital-payment-note"><strong>Confirm {paymentOptions.find((item) => item.id === paymentMethod)?.label} payment</strong><span>This records a manually verified payment; no gateway is connected.</span></div>}
-            <button className="primary-button confirm-order-button" type="button" disabled={submitting || cart.length === 0} onClick={confirmOrder}>{submitting ? 'Saving order…' : `Confirm order · ${formatCurrency(subtotalCents)}`}</button>
+            <button className="primary-button confirm-order-button" type="button" disabled={submitting || cart.length === 0 || cartHasUnavailableItems} onClick={confirmOrder}>{submitting ? 'Saving order…' : `Confirm order · ${formatCurrency(subtotalCents)}`}</button>
           </div>
         </aside>
       </div>

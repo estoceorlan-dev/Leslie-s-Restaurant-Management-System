@@ -75,7 +75,7 @@
 ## Non-Functional Requirements
 
 - **NFR-01 Usability:** The system shall use simple labels, clear status colors, and touch-friendly controls.
-- **NFR-02 Performance:** Normal local API requests should complete within two seconds with school demonstration data.
+- **NFR-02 Performance:** Normal local API requests should complete within two seconds with typical restaurant data.
 - **NFR-03 Offline Operation:** Core functions shall work without an internet connection.
 - **NFR-04 Persistence:** Saved data shall remain available after restarting the application.
 - **NFR-05 Security:** Passwords shall be stored as hashes, and protected actions shall be checked on the server.
@@ -89,9 +89,10 @@
 - The React development server starts successfully.
 - The Express API starts successfully.
 - The API creates or opens the local SQLite database.
-- The database contains the initial tables and sample records.
-- The React application retrieves and displays sample menu data from the API.
-- Restarting the server does not remove the saved sample data.
+- The database contains the initial tables without automatically inserting accounts or restaurant records.
+- The first administrator can be created securely from the host terminal.
+- The React application retrieves and displays administrator-configured menu data from the API.
+- Restarting the server does not remove saved restaurant data.
 
 ## Phase 3 Acceptance Criteria
 

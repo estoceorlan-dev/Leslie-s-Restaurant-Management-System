@@ -9,10 +9,12 @@
   "scripts": {
     "dev": "concurrently -n client,server -c cyan,green \"npm run dev --workspace client\" \"npm run dev --workspace server\"",
     "build": "npm run build --workspace client",
-    "start": "npm run build && npm run start --workspace server",
+    "start": "npm run build && npm run start:production",
+    "start:production": "npm run start:production --workspace server",
     "db:init": "npm run db:init --workspace server",
-    "db:backup": "node server/src/database/backup.js",
-    "db:restore": "node server/src/database/restore.js",
+    "admin:create": "node --env-file-if-exists=.env server/src/database/create-admin.js",
+    "db:backup": "node --env-file-if-exists=.env server/src/database/backup.js",
+    "db:restore": "node --env-file-if-exists=.env server/src/database/restore.js",
     "check": "npm run build && npm run check --workspace server"
   },
   "devDependencies": {
