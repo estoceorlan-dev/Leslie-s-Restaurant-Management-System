@@ -13,10 +13,11 @@
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@neon/env": "^2.1.7",
     "@tailwindcss/vite": "^4.3.3",
-    "tailwindcss": "^4.3.3",
-    "vite": "^7.1.0",
+    "@vercel/config": "^0.15.0",
     "@vitejs/plugin-react": "^5.0.0",
-    "@neon/env": "^2.1.7"
+    "tailwindcss": "^4.3.3",
+    "vite": "^7.1.0"
   }
 }
