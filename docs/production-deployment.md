@@ -28,6 +28,8 @@ npm run db:init
 
 Look for **PostgreSQL schema initialized**. The ignored root `.env` contains the pooled `DATABASE_URL` for the API and the direct `DATABASE_URL_UNPOOLED` for setup and migration. Keep this file private. In Windows PowerShell, use `npm.cmd` and `neon.cmd` if local script execution is restricted.
 
+The application commands also load `.env.local`, which Neon uses when `.env` is absent. Vite development and preview use the pulled branch variables to proxy API requests to the deployed `restaurant` function. Set `RESTAURANT_API_ORIGIN` to override that target.
+
 Choose one path for your records:
 
 - **New installation.** Run `npm run admin:create` in an interactive terminal. Enter the first administrator's name, username, and password. The command masks the password and works only while the user table is empty.

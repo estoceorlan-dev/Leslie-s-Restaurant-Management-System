@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { attachDatabasePool } from '@neon/functions';
 
 // Aggregates and cent amounts are returned as JSON numbers by the API.
 pg.types.setTypeParser(20, Number);
@@ -19,7 +20,7 @@ function queries(client) {
 
 export function createPostgresDatabase(connectionString) {
   const pool = new pg.Pool({ connectionString, max: 5, connectionTimeoutMillis: 10000 });
-  pool.on('error', (error) => console.error('Idle PostgreSQL connection failed:', error.code));
+  attachDatabasePool(pool);
   return {
     ...queries(pool),
     async transaction(work) {
