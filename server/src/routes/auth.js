@@ -1,6 +1,6 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import { db } from '../database/connection.js';
+import { db } from '../database/queries.js';
 import {
   authenticate,
   createSession,
@@ -9,11 +9,11 @@ import {
 
 export const authRouter = express.Router();
 
-authRouter.post('/login', (request, response) => {
-  const username = typeof request.body.username === 'string'
+authRouter.post('/login', async (request, response) => {
+  const username = typeof request.body?.username === 'string'
     ? request.body.username.trim()
     : '';
-  const password = typeof request.body.password === 'string'
+  const password = typeof request.body?.password === 'string'
     ? request.body.password
     : '';
 
@@ -21,18 +21,18 @@ authRouter.post('/login', (request, response) => {
     return response.status(400).json({ error: 'Username and password are required.' });
   }
 
-  const account = db.prepare(`
+  const account = await db.get(`
     SELECT id, name, username, password_hash, role
     FROM users
     WHERE username = ? AND is_active = 1
-  `).get(username);
+  `, username);
 
-  if (!account || !bcrypt.compareSync(password, account.password_hash)) {
+  if (!account || !await bcrypt.compare(password, account.password_hash)) {
     return response.status(401).json({ error: 'Incorrect username or password.' });
   }
 
   const { password_hash: _passwordHash, ...user } = account;
-  const session = createSession(account.id);
+  const session = await createSession(account.id);
   return response.json({ data: { user, ...session } });
 });
 
@@ -40,7 +40,7 @@ authRouter.get('/me', authenticate, (request, response) => {
   response.json({ data: request.user });
 });
 
-authRouter.post('/logout', authenticate, (request, response) => {
-  deleteSession(request.authToken);
+authRouter.post('/logout', authenticate, async (request, response) => {
+  await deleteSession(request.authToken);
   response.status(204).end();
 });

@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import Database from 'better-sqlite3';
+import { createRequire } from 'node:module';
 import { config } from '../config.js';
+
+const Database = createRequire(import.meta.url)('better-sqlite3');
 
 fs.mkdirSync(path.dirname(config.databasePath), { recursive: true });
 

@@ -1,5 +1,5 @@
 import express from 'express';
-import { db } from '../database/connection.js';
+import { db, postgres } from '../database/queries.js';
 import { authenticate, requireRoles } from '../middleware/auth.js';
 
 export const reportsRouter = express.Router();
@@ -22,7 +22,9 @@ function validDate(value) {
 }
 
 function parseDateRange(query) {
-  const today = localDateString();
+  const today = postgres
+    ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+    : localDateString();
   const from = typeof query.from === 'string' && query.from ? query.from : today;
   const to = typeof query.to === 'string' && query.to ? query.to : from;
   if (!validDate(from) || !validDate(to)) {
@@ -32,50 +34,53 @@ function parseDateRange(query) {
   return { value: { from, to } };
 }
 
-reportsRouter.get('/sales', (request, response) => {
+reportsRouter.get('/sales', async (request, response) => {
   const parsed = parseDateRange(request.query);
   if (parsed.error) return response.status(400).json({ error: parsed.error });
   const { from, to } = parsed.value;
 
+  const salesDate = postgres
+    ? "CAST(orders.created_at AT TIME ZONE 'Asia/Manila' AS DATE)"
+    : "date(orders.created_at, 'localtime')";
   const completedOrderFilter = `
     orders.status = 'completed'
-    AND date(orders.created_at, 'localtime') BETWEEN ? AND ?
+    AND ${salesDate} BETWEEN ? AND ?
   `;
-  const orderSummary = db.prepare(`
+  const orderSummary = await db.get(`
     SELECT COUNT(*) AS completed_orders,
       COALESCE(SUM(total_cents), 0) AS total_sales_cents,
       COALESCE(ROUND(AVG(total_cents)), 0) AS average_order_cents
     FROM orders
     WHERE ${completedOrderFilter}
-  `).get(from, to);
-  const itemSummary = db.prepare(`
+  `, from, to);
+  const itemSummary = await db.get(`
     SELECT COALESCE(SUM(order_items.quantity), 0) AS items_sold
     FROM order_items
     INNER JOIN orders ON orders.id = order_items.order_id
     WHERE ${completedOrderFilter}
-  `).get(from, to);
+  `, from, to);
 
-  const paymentRows = db.prepare(`
+  const paymentRows = await db.all(`
     SELECT payment_method, COUNT(*) AS order_count,
       COALESCE(SUM(total_cents), 0) AS total_cents
     FROM orders
     WHERE ${completedOrderFilter}
     GROUP BY payment_method
-  `).all(from, to);
+  `, from, to);
   const paymentsByMethod = new Map(
     paymentRows.map((row) => [row.payment_method, row]),
   );
 
-  const dailySales = db.prepare(`
-    SELECT date(created_at, 'localtime') AS date,
+  const dailySales = await db.all(`
+    SELECT ${salesDate} AS date,
       COUNT(*) AS order_count, COALESCE(SUM(total_cents), 0) AS total_cents
     FROM orders
     WHERE ${completedOrderFilter}
-    GROUP BY date(created_at, 'localtime')
+    GROUP BY ${salesDate}
     ORDER BY date
-  `).all(from, to);
+  `, from, to);
 
-  const bestSellers = db.prepare(`
+  const bestSellers = await db.all(`
     SELECT order_items.menu_item_id, order_items.item_name,
       SUM(order_items.quantity) AS quantity_sold,
       SUM(order_items.subtotal_cents) AS sales_cents
@@ -83,9 +88,9 @@ reportsRouter.get('/sales', (request, response) => {
     INNER JOIN orders ON orders.id = order_items.order_id
     WHERE ${completedOrderFilter}
     GROUP BY order_items.menu_item_id, order_items.item_name
-    ORDER BY quantity_sold DESC, sales_cents DESC, order_items.item_name COLLATE NOCASE
+    ORDER BY quantity_sold DESC, sales_cents DESC, lower(order_items.item_name)
     LIMIT 10
-  `).all(from, to);
+  `, from, to);
 
   return response.json({
     data: {
@@ -105,15 +110,15 @@ reportsRouter.get('/sales', (request, response) => {
   });
 });
 
-reportsRouter.get('/inventory', (_request, response) => {
-  const items = db.prepare(`
+reportsRouter.get('/inventory', async (_request, response) => {
+  const items = await db.all(`
     SELECT id, name, unit, quantity, low_stock_level,
-      quantity <= low_stock_level AS is_low_stock,
-      quantity = 0 AS is_out_of_stock, updated_at
+      CAST(quantity <= low_stock_level AS INTEGER) AS is_low_stock,
+      CAST(quantity = 0 AS INTEGER) AS is_out_of_stock, updated_at
     FROM inventory_items
     WHERE is_active = 1
-    ORDER BY is_low_stock DESC, name COLLATE NOCASE
-  `).all();
+    ORDER BY is_low_stock DESC, lower(name)
+  `);
 
   return response.json({
     data: {

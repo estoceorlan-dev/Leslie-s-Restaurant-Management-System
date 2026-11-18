@@ -235,7 +235,7 @@ export function CashierOrderPage({ onViewHistory }) {
 
           {loading ? <div className="menu-loading">Loading menu…</div> : visibleMenu.length === 0 ? <EmptyState>No available menu items match your search.</EmptyState> : <div className="cashier-menu-grid">{visibleMenu.map((item) => {
             const count = cart.find((line) => line.id === item.id)?.quantity ?? 0;
-            return <button className="cashier-menu-card" type="button" key={item.id} onClick={() => addItem(item)}><span className="menu-card-category">{item.category_name}</span><strong>{item.name}</strong><span className="menu-card-bottom"><b>{formatCurrency(item.price_cents)}</b><i>{count ? `${count} in order` : '+'}</i></span></button>;
+            return <button className="cashier-menu-card" type="button" key={item.id} onClick={() => addItem(item)}>{item.photo_version && <img className="menu-card-photo" src={`/api/menu-photos/${item.photo_version}`} alt="" loading="lazy" />}<span className="menu-card-category">{item.category_name}</span><strong>{item.name}</strong><span className="menu-card-bottom"><b>{formatCurrency(item.price_cents)}</b><i>{count ? `${count} in order` : '+'}</i></span></button>;
           })}</div>}
         </div>
 

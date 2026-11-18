@@ -1,10 +1,13 @@
+import { decodeMenuPhoto, saveMenuPhoto } from '../menu-images.js';
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import { db } from '../database/connection.js';
+import { db, postgres } from '../database/queries.js';
 import { authenticate, requireRoles } from '../middleware/auth.js';
 
 export const adminRouter = express.Router();
 
+adminRouter.use('/menu-items', express.json({ limit: '3mb' }));
+adminRouter.use(express.json());
 adminRouter.use(authenticate, requireRoles('admin'));
 
 const roles = new Set(['admin', 'cashier', 'kitchen']);
@@ -17,7 +20,7 @@ function conflict(response, label) {
   return response.status(409).json({ error: `${label} is already in use.` });
 }
 
-function employeePayload(body, { editing = false } = {}) {
+function employeePayload(body = {}, { editing = false } = {}) {
   const name = cleanText(body.name);
   const username = cleanText(body.username);
   const password = typeof body.password === 'string' ? body.password : '';
@@ -42,50 +45,45 @@ function employeePayload(body, { editing = false } = {}) {
   return { value: { name, username, password, role, is_active: booleanInt(body.is_active) } };
 }
 
-adminRouter.get('/employees', (_request, response) => {
-  const employees = db.prepare(`
+adminRouter.get('/employees', async (_request, response) => {
+  const employees = await db.all(`
     SELECT id, name, username, role, is_active, created_at, updated_at
     FROM users
-    ORDER BY is_active DESC, name COLLATE NOCASE
-  `).all();
+    ORDER BY is_active DESC, lower(name)
+  `);
   response.json({ data: employees });
 });
 
-adminRouter.post('/employees', (request, response) => {
+adminRouter.post('/employees', async (request, response) => {
   const parsed = employeePayload(request.body);
   if (parsed.error) return response.status(400).json({ error: parsed.error });
   const employee = parsed.value;
 
-  if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(employee.username)) {
+  if (await db.get('SELECT 1 FROM users WHERE username = ?', employee.username)) {
     return conflict(response, 'Username');
   }
 
-  const result = db.prepare(`
+  const result = await db.get(`
     INSERT INTO users (name, username, password_hash, role, is_active)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(
-    employee.name,
+    VALUES (?, ?, ?, ?, ?) RETURNING id
+  `, employee.name,
     employee.username,
-    bcrypt.hashSync(employee.password, 10),
+    await bcrypt.hash(employee.password, 10),
     employee.role,
-    employee.is_active,
-  );
+    employee.is_active);
 
-  const created = db.prepare(`
+  const created = await db.get(`
     SELECT id, name, username, role, is_active, created_at, updated_at
     FROM users WHERE id = ?
-  `).get(result.lastInsertRowid);
+  `, result.id);
   response.status(201).json({ data: created });
 });
 
-adminRouter.put('/employees/:id', (request, response) => {
+adminRouter.put('/employees/:id', async (request, response) => {
   if (!positiveId(request.params.id)) {
     return response.status(400).json({ error: 'Invalid employee id.' });
   }
   const id = Number(request.params.id);
-  const current = db.prepare('SELECT id, role, is_active FROM users WHERE id = ?').get(id);
-  if (!current) return response.status(404).json({ error: 'Employee was not found.' });
-
   const parsed = employeePayload(request.body, { editing: true });
   if (parsed.error) return response.status(400).json({ error: parsed.error });
   const employee = parsed.value;
@@ -94,49 +92,31 @@ adminRouter.put('/employees/:id', (request, response) => {
     return response.status(400).json({ error: 'You cannot deactivate or remove the admin role from your own account.' });
   }
 
-  if (current.role === 'admin' && current.is_active && (!employee.is_active || employee.role !== 'admin')) {
-    const otherAdmins = db.prepare(`
-      SELECT COUNT(*) AS count FROM users
-      WHERE role = 'admin' AND is_active = 1 AND id <> ?
-    `).get(id).count;
-    if (otherAdmins === 0) {
-      return response.status(400).json({ error: 'At least one active administrator is required.' });
+  const passwordHash = employee.password ? await bcrypt.hash(employee.password, 10) : null;
+  const updated = await db.transaction(async (tx) => {
+    if (postgres) await tx.run('LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE');
+    const current = await tx.get('SELECT role, is_active FROM users WHERE id = ?', id);
+    if (!current) return { status: 404, error: 'Employee was not found.' };
+    if (current.role === 'admin' && current.is_active && (!employee.is_active || employee.role !== 'admin')) {
+      const other = await tx.get("SELECT 1 FROM users WHERE role = 'admin' AND is_active = 1 AND id <> ? LIMIT 1", id);
+      if (!other) return { status: 400, error: 'At least one active administrator is required.' };
     }
-  }
-
-  if (db.prepare('SELECT 1 FROM users WHERE username = ? AND id <> ?').get(employee.username, id)) {
-    return conflict(response, 'Username');
-  }
-
-  const update = employee.password
-    ? db.prepare(`
-        UPDATE users SET name = ?, username = ?, password_hash = ?, role = ?,
-          is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-      `).run(
-        employee.name,
-        employee.username,
-        bcrypt.hashSync(employee.password, 10),
-        employee.role,
-        employee.is_active,
-        id,
-      )
-    : db.prepare(`
-        UPDATE users SET name = ?, username = ?, role = ?, is_active = ?,
-          updated_at = CURRENT_TIMESTAMP WHERE id = ?
-      `).run(employee.name, employee.username, employee.role, employee.is_active, id);
-
-  if (!employee.is_active) {
-    db.prepare('DELETE FROM auth_sessions WHERE user_id = ?').run(id);
-  }
-
-  const updated = db.prepare(`
-    SELECT id, name, username, role, is_active, created_at, updated_at
-    FROM users WHERE id = ?
-  `).get(id);
-  response.json({ data: updated, changes: update.changes });
+    if (await tx.get('SELECT 1 FROM users WHERE username = ? AND id <> ?', employee.username, id)) {
+      return { status: 409, error: 'Username is already in use.' };
+    }
+    const data = await tx.get(`
+      UPDATE users SET name = ?, username = ?, role = ?, is_active = ?,
+        password_hash = COALESCE(?, password_hash), updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? RETURNING id, name, username, role, is_active, created_at, updated_at
+    `, employee.name, employee.username, employee.role, employee.is_active, passwordHash, id);
+    if (!employee.is_active || passwordHash) await tx.run('DELETE FROM auth_sessions WHERE user_id = ?', id);
+    return { data, changes: 1 };
+  });
+  if (updated.error) return response.status(updated.status).json({ error: updated.error });
+  return response.json(updated);
 });
 
-function categoryPayload(body) {
+function categoryPayload(body = {}) {
   const name = cleanText(body.name);
   if (name.length < 2 || name.length > 50) {
     return { error: 'Category name must be between 2 and 50 characters.' };
@@ -145,59 +125,57 @@ function categoryPayload(body) {
   return { value: { name, is_active: booleanInt(body.is_active) } };
 }
 
-adminRouter.get('/categories', (_request, response) => {
-  const categories = db.prepare(`
+adminRouter.get('/categories', async (_request, response) => {
+  const categories = await db.all(`
     SELECT categories.id, categories.name, categories.is_active, categories.created_at,
       COUNT(menu_items.id) AS item_count
     FROM categories
     LEFT JOIN menu_items ON menu_items.category_id = categories.id
     GROUP BY categories.id
-    ORDER BY categories.is_active DESC, categories.name COLLATE NOCASE
-  `).all();
+    ORDER BY categories.is_active DESC, lower(categories.name)
+  `);
   response.json({ data: categories });
 });
 
-adminRouter.post('/categories', (request, response) => {
+adminRouter.post('/categories', async (request, response) => {
   const parsed = categoryPayload(request.body);
   if (parsed.error) return response.status(400).json({ error: parsed.error });
   const category = parsed.value;
-  if (db.prepare('SELECT 1 FROM categories WHERE name = ? COLLATE NOCASE').get(category.name)) {
+  if (await db.get('SELECT 1 FROM categories WHERE lower(name) = lower(?)', category.name)) {
     return conflict(response, 'Category name');
   }
-  const result = db.prepare('INSERT INTO categories (name, is_active) VALUES (?, ?)')
-    .run(category.name, category.is_active);
+  const result = await db.get('INSERT INTO categories (name, is_active) VALUES (?, ?) RETURNING id', category.name, category.is_active);
   response.status(201).json({
-    data: db.prepare(`
+    data: await db.get(`
       SELECT id, name, is_active, created_at, 0 AS item_count
       FROM categories WHERE id = ?
-    `).get(result.lastInsertRowid),
+    `, result.id),
   });
 });
 
-adminRouter.put('/categories/:id', (request, response) => {
+adminRouter.put('/categories/:id', async (request, response) => {
   if (!positiveId(request.params.id)) return response.status(400).json({ error: 'Invalid category id.' });
   const id = Number(request.params.id);
-  if (!db.prepare('SELECT 1 FROM categories WHERE id = ?').get(id)) {
+  if (!await db.get('SELECT 1 FROM categories WHERE id = ?', id)) {
     return response.status(404).json({ error: 'Category was not found.' });
   }
   const parsed = categoryPayload(request.body);
   if (parsed.error) return response.status(400).json({ error: parsed.error });
   const category = parsed.value;
-  if (db.prepare('SELECT 1 FROM categories WHERE name = ? COLLATE NOCASE AND id <> ?').get(category.name, id)) {
+  if (await db.get('SELECT 1 FROM categories WHERE lower(name) = lower(?) AND id <> ?', category.name, id)) {
     return conflict(response, 'Category name');
   }
-  db.prepare('UPDATE categories SET name = ?, is_active = ? WHERE id = ?')
-    .run(category.name, category.is_active, id);
-  const updated = db.prepare(`
+  await db.run('UPDATE categories SET name = ?, is_active = ? WHERE id = ?', category.name, category.is_active, id);
+  const updated = await db.get(`
     SELECT categories.id, categories.name, categories.is_active, categories.created_at,
       COUNT(menu_items.id) AS item_count
     FROM categories LEFT JOIN menu_items ON menu_items.category_id = categories.id
     WHERE categories.id = ? GROUP BY categories.id
-  `).get(id);
+  `, id);
   response.json({ data: updated });
 });
 
-function menuItemPayload(body) {
+async function menuItemPayload(body) {
   const name = cleanText(body.name);
   const categoryId = Number(body.category_id);
   const priceCents = Number(body.price_cents);
@@ -209,8 +187,15 @@ function menuItemPayload(body) {
   if (!isBoolean(body.is_available) || !isBoolean(body.is_active)) {
     return { error: 'Menu item availability and active status are required.' };
   }
+  let photo;
+  try {
+    photo = await decodeMenuPhoto(body.photo);
+  } catch (error) {
+    return { error: error.message };
+  }
   return {
     value: {
+      photo,
       name,
       category_id: categoryId,
       price_cents: priceCents,
@@ -223,63 +208,70 @@ function menuItemPayload(body) {
 const menuItemSelect = `
   SELECT menu_items.id, menu_items.category_id, menu_items.name,
     menu_items.price_cents, menu_items.is_available, menu_items.is_active,
-    menu_items.created_at, menu_items.updated_at, categories.name AS category_name
+    menu_images.version AS photo_version, menu_items.created_at, menu_items.updated_at, categories.name AS category_name
   FROM menu_items INNER JOIN categories ON categories.id = menu_items.category_id
+  LEFT JOIN menu_images ON menu_images.menu_item_id = menu_items.id
 `;
 
-adminRouter.get('/menu-items', (_request, response) => {
-  const items = db.prepare(`${menuItemSelect}
-    ORDER BY menu_items.is_active DESC, categories.name COLLATE NOCASE, menu_items.name COLLATE NOCASE
-  `).all();
+adminRouter.get('/menu-items', async (_request, response) => {
+  const items = await db.all(`${menuItemSelect}
+    ORDER BY menu_items.is_active DESC, lower(categories.name), lower(menu_items.name)
+  `);
   response.json({ data: items });
 });
 
-adminRouter.post('/menu-items', (request, response) => {
-  const parsed = menuItemPayload(request.body);
+adminRouter.post('/menu-items', async (request, response) => {
+  const parsed = await menuItemPayload(request.body ?? {});
   if (parsed.error) return response.status(400).json({ error: parsed.error });
   const item = parsed.value;
-  if (!db.prepare('SELECT 1 FROM categories WHERE id = ? AND is_active = 1').get(item.category_id)) {
+  if (!await db.get('SELECT 1 FROM categories WHERE id = ? AND is_active = 1', item.category_id)) {
     return response.status(400).json({ error: 'Select an active category.' });
   }
-  if (db.prepare('SELECT 1 FROM menu_items WHERE name = ? COLLATE NOCASE').get(item.name)) {
+  if (await db.get('SELECT 1 FROM menu_items WHERE lower(name) = lower(?)', item.name)) {
     return conflict(response, 'Menu item name');
   }
-  const result = db.prepare(`
-    INSERT INTO menu_items (category_id, name, price_cents, is_available, is_active)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(item.category_id, item.name, item.price_cents, item.is_available, item.is_active);
-  response.status(201).json({
-    data: db.prepare(`${menuItemSelect} WHERE menu_items.id = ?`).get(result.lastInsertRowid),
+  const created = await db.transaction(async (tx) => {
+    const { id } = await tx.get(`
+      INSERT INTO menu_items (category_id, name, price_cents, is_available, is_active)
+      VALUES (?, ?, ?, ?, ?) RETURNING id
+    `, item.category_id, item.name, item.price_cents, item.is_available, item.is_active);
+    await saveMenuPhoto(tx, id, item.photo);
+    return tx.get(`${menuItemSelect} WHERE menu_items.id = ?`, id);
   });
+  response.status(201).json({ data: created });
 });
 
-adminRouter.put('/menu-items/:id', (request, response) => {
+adminRouter.put('/menu-items/:id', async (request, response) => {
   if (!positiveId(request.params.id)) return response.status(400).json({ error: 'Invalid menu item id.' });
   const id = Number(request.params.id);
-  if (!db.prepare('SELECT 1 FROM menu_items WHERE id = ?').get(id)) {
+  if (!await db.get('SELECT 1 FROM menu_items WHERE id = ?', id)) {
     return response.status(404).json({ error: 'Menu item was not found.' });
   }
-  const parsed = menuItemPayload(request.body);
+  const parsed = await menuItemPayload(request.body ?? {});
   if (parsed.error) return response.status(400).json({ error: parsed.error });
   const item = parsed.value;
-  const category = db.prepare('SELECT is_active FROM categories WHERE id = ?').get(item.category_id);
+  const category = await db.get('SELECT is_active FROM categories WHERE id = ?', item.category_id);
   if (!category) {
     return response.status(400).json({ error: 'Select a valid category.' });
   }
   if (item.is_active && !category.is_active) {
     return response.status(400).json({ error: 'An active menu item must use an active category.' });
   }
-  if (db.prepare('SELECT 1 FROM menu_items WHERE name = ? COLLATE NOCASE AND id <> ?').get(item.name, id)) {
+  if (await db.get('SELECT 1 FROM menu_items WHERE lower(name) = lower(?) AND id <> ?', item.name, id)) {
     return conflict(response, 'Menu item name');
   }
-  db.prepare(`
-    UPDATE menu_items SET category_id = ?, name = ?, price_cents = ?,
-      is_available = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-  `).run(item.category_id, item.name, item.price_cents, item.is_available, item.is_active, id);
-  response.json({ data: db.prepare(`${menuItemSelect} WHERE menu_items.id = ?`).get(id) });
+  const updated = await db.transaction(async (tx) => {
+    await tx.run(`
+      UPDATE menu_items SET category_id = ?, name = ?, price_cents = ?,
+        is_available = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+    `, item.category_id, item.name, item.price_cents, item.is_available, item.is_active, id);
+    await saveMenuPhoto(tx, id, item.photo);
+    return tx.get(`${menuItemSelect} WHERE menu_items.id = ?`, id);
+  });
+  response.json({ data: updated });
 });
 
-function tablePayload(body) {
+function tablePayload(body = {}) {
   const tableNumber = Number(body.table_number);
   const capacity = Number(body.capacity);
   if (!Number.isInteger(tableNumber) || tableNumber < 1 || tableNumber > 999) {
@@ -292,8 +284,8 @@ function tablePayload(body) {
   return { value: { table_number: tableNumber, capacity, is_active: booleanInt(body.is_active) } };
 }
 
-adminRouter.get('/tables', (_request, response) => {
-  const tables = db.prepare(`
+adminRouter.get('/tables', async (_request, response) => {
+  const tables = await db.all(`
     SELECT id, table_number, capacity,
       CASE
         WHEN status = 'occupied' OR EXISTS (
@@ -305,32 +297,32 @@ adminRouter.get('/tables', (_request, response) => {
       END AS status,
       is_active
     FROM restaurant_tables ORDER BY is_active DESC, table_number
-  `).all();
+  `);
   response.json({ data: tables });
 });
 
-adminRouter.post('/tables', (request, response) => {
+adminRouter.post('/tables', async (request, response) => {
   const parsed = tablePayload(request.body);
   if (parsed.error) return response.status(400).json({ error: parsed.error });
   const table = parsed.value;
-  if (db.prepare('SELECT 1 FROM restaurant_tables WHERE table_number = ?').get(table.table_number)) {
+  if (await db.get('SELECT 1 FROM restaurant_tables WHERE table_number = ?', table.table_number)) {
     return conflict(response, 'Table number');
   }
-  const result = db.prepare(`
-    INSERT INTO restaurant_tables (table_number, capacity, is_active) VALUES (?, ?, ?)
-  `).run(table.table_number, table.capacity, table.is_active);
+  const result = await db.get(`
+    INSERT INTO restaurant_tables (table_number, capacity, is_active) VALUES (?, ?, ?) RETURNING id
+  `, table.table_number, table.capacity, table.is_active);
   response.status(201).json({
-    data: db.prepare(`
+    data: await db.get(`
       SELECT id, table_number, capacity, status, is_active
       FROM restaurant_tables WHERE id = ?
-    `).get(result.lastInsertRowid),
+    `, result.id),
   });
 });
 
-adminRouter.put('/tables/:id', (request, response) => {
+adminRouter.put('/tables/:id', async (request, response) => {
   if (!positiveId(request.params.id)) return response.status(400).json({ error: 'Invalid table id.' });
   const id = Number(request.params.id);
-  const current = db.prepare(`
+  const current = await db.get(`
     SELECT id, status,
       EXISTS (
         SELECT 1 FROM orders
@@ -338,7 +330,7 @@ adminRouter.put('/tables/:id', (request, response) => {
           AND orders.status IN ('pending', 'preparing', 'ready')
       ) AS has_active_order
     FROM restaurant_tables WHERE id = ?
-  `).get(id);
+  `, id);
   if (!current) return response.status(404).json({ error: 'Table was not found.' });
   const parsed = tablePayload(request.body);
   if (parsed.error) return response.status(400).json({ error: parsed.error });
@@ -346,16 +338,18 @@ adminRouter.put('/tables/:id', (request, response) => {
   if (!table.is_active && (current.status === 'occupied' || current.has_active_order)) {
     return response.status(400).json({ error: 'An occupied table cannot be archived.' });
   }
-  if (db.prepare('SELECT 1 FROM restaurant_tables WHERE table_number = ? AND id <> ?').get(table.table_number, id)) {
+  if (await db.get('SELECT 1 FROM restaurant_tables WHERE table_number = ? AND id <> ?', table.table_number, id)) {
     return conflict(response, 'Table number');
   }
-  db.prepare(`
-    UPDATE restaurant_tables SET table_number = ?, capacity = ?, is_active = ? WHERE id = ?
-  `).run(table.table_number, table.capacity, table.is_active, id);
+  const changes = await db.run(`
+    UPDATE restaurant_tables SET table_number = ?, capacity = ?, is_active = ?
+    WHERE id = ? AND (? = 1 OR status = 'available')
+  `, table.table_number, table.capacity, table.is_active, id, table.is_active);
+  if (!changes) return response.status(409).json({ error: 'The table is now occupied.' });
   response.json({
-    data: db.prepare(`
+    data: await db.get(`
       SELECT id, table_number, capacity, status, is_active
       FROM restaurant_tables WHERE id = ?
-    `).get(id),
+    `, id),
   });
 });

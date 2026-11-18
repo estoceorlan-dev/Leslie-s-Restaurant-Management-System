@@ -1,236 +1,46 @@
-# System Architecture
+# Architecture
 
-## Project
+Leslie's has one React frontend and one Express API. Cashiers, kitchen staff, and administrators share the same database. React selects the workspace after sign-in. Express checks the employee's role for each protected operation.
 
-Leslie's Restaurant Management System
+## Request path
 
-## Architecture Overview
-
-The system will use a simple three-layer web architecture. It will run locally and remain usable without an internet connection.
-
-```text
-Users
-  Admin | Cashier | Kitchen Staff
-                    |
-                    v
-          React Web Application
-                    |
-              HTTP/JSON API
-                    |
-                    v
-          Node.js + Express Server
-                    |
-                    v
-              SQLite Database
+```mermaid
+flowchart LR
+    Browser[Staff browser] -->|HTTPS| Vercel[Vercel]
+    Vercel -->|"/api/*"| Neon[Express on Neon Functions]
+    Neon --> PG[(PostgreSQL)]
+    Browser -->|Private LAN| Host[Express on restaurant host]
+    Host --> SQLite[(SQLite on local disk)]
 ```
 
-All users access the same React application. The application displays different dashboards and actions according to the logged-in employee's role.
+In the cloud, Vercel serves the Vite build and forwards API traffic to the Neon Function through a same-origin rewrite. On a private network, Express serves both the build and the API. During local development, Vite forwards API requests to Express on port 3000. The kitchen queue and cashier status feed poll the API every five seconds.
 
-## Deployment Model
+## From checkout to reporting
 
-The recommended school-project setup is offline-only:
+1. **Checkout.** A cashier submits menu item IDs, quantities, notes, payment details, and an optional dine-in table. The API reads current prices and calculates the total and cash change in integer centavos.
+2. **Order storage.** A single transaction writes the order and its lines and marks a dine-in table occupied. Each line stores the dish name and unit price at checkout, so an edit to tomorrow's menu preserves today's receipt.
+3. **Kitchen.** Tickets move from **Pending → Preparing → Ready → Completed**. A status update must match the current stored state. Completion releases the table in the same transaction when it has no other active order.
+4. **Reporting.** Completed orders contribute to sales totals, payment breakdowns, and best-seller reports. The PostgreSQL queries group sales by the Asia/Manila business date. SQLite reports use the host's local date.
 
-- The React application, Express server, and SQLite database run on one computer.
-- The application is opened through a web browser.
-- Internet access is not required for normal operation.
-- Other computers on the same local network connect to the host's Express server; they do not open the SQLite file directly.
-- The production Express process serves both the React application and the API from one LAN address.
-- The SQLite database remains on the host computer's local disk and is backed up through the provided online backup command.
+## Data model
 
-## Technology Stack
+| Records | Relationship and purpose |
+| --- | --- |
+| `users`, `auth_sessions` | Each employee has a role and bcrypt password hash. Signing in creates a 12-hour bearer token. The database stores its SHA-256 hash and expiration. |
+| `categories`, `menu_items`, `menu_images` | A category groups dishes. A menu item has a price, availability, and an optional photo. The menu response carries the photo version so the browser can fetch the image separately. |
+| `restaurant_tables`, `orders`, `order_items` | Each order belongs to a cashier and contains one or more lines. Dine-in orders reference a table. Takeout orders have no table assignment. |
+| `inventory_items`, `stock_movements` | An administrator records additions and deductions. Each movement keeps the employee, amount, timestamp, and optional notes. The balance and movement commit together. |
 
-| Layer | Technology | Responsibility |
-|---|---|---|
-| Frontend | React with Vite | Screens, forms, navigation, and client-side interaction |
-| Styling | Plain CSS | Lightweight, responsive initial interface |
-| Backend | Node.js with Express | API endpoints, validation, authentication, and business rules |
-| Database | SQLite | Local storage of users, menu items, orders, and inventory |
-| Data access | better-sqlite3 | SQLite queries, transactions, and local persistence |
-| Authentication | Hashed bearer-token sessions | Employee identity and role-based access |
-| Charts | React and CSS | Lightweight offline sales charts without an external runtime dependency |
-| Printing | Browser print styles | Receipts and reports |
+The photo endpoint serves a versioned WebP. Sharp accepts input up to 2 MiB and 25 megapixels and fits the output within 960 × 960 pixels. Replacing a photo gives it a new URL. Anyone with that URL can view the menu image.
 
-SQLite is the default database. MySQL may replace it later if it is required by the instructor or if the system is expanded for heavier multi-computer use.
+## Implementation map
 
-## Application Modules
+| Code | Responsibility |
+| --- | --- |
+| [React workspaces](client/src/pages) and [API client](client/src/services/api.js) | Role-specific screens, forms, receipts, and authenticated HTTP requests |
+| [Express app](server/src/app.js) and [routes](server/src/routes) | API routing, authorization, validation, and restaurant workflows |
+| [Neon entry point](server/src/function.js) and [LAN entry point](server/src/server.js) | Adapt the same Express app to a Neon request handler or a local HTTP listener |
+| [Database adapters](server/src/database/queries.js) | Select PostgreSQL when `DATABASE_URL` is configured, or SQLite for local installations |
+| [PostgreSQL schema](server/src/database/postgres.sql) and [SQLite schema](server/src/database/schema.sql) | Tables, relationships, constraints, and indexes |
 
-### Authentication Module
-
-- Employee login and logout
-- Password verification
-- Admin, cashier, and kitchen roles
-- Protected routes and API endpoints
-- Random 12-hour session tokens, stored as SHA-256 hashes in SQLite
-
-### Administration Module
-
-- Employee accounts
-- Menu categories
-- Menu items, prices, and availability
-- Restaurant tables
-
-### Ordering Module
-
-- Dine-in and takeout orders
-- Order items and quantities
-- Order notes
-- Automatic total calculation
-- Table assignment
-- Order history
-
-### Payment and Receipt Module
-
-- Cash, GCash, and Maya payment records
-- Amount received and change calculation
-- Printable receipts
-
-The application records GCash and Maya payments but does not communicate with their external payment systems.
-
-The ordering workflow saves an order and its item rows in one SQLite transaction. The API loads current menu prices and calculates totals and cash change on the server. Browser-provided totals are ignored. Saving a dine-in order marks its table occupied in that same transaction.
-
-### Kitchen Module
-
-- Kitchen order queue
-- Pending, Preparing, Ready, and Completed statuses
-- Guarded forward-only status transitions
-- Automatic five-second screen refresh
-- Order timestamps and notes
-- Cashier-facing status polling and notifications
-- Automatic table release when a dine-in order is completed
-
-### Inventory Module
-
-- Inventory items and quantities
-- Transactional stock additions and deductions
-- Low-stock thresholds
-- Stock-movement history with employee attribution and notes
-- Archived-item retention and below-zero deduction protection
-
-### Reporting Module
-
-- Daily and date-range sales
-- Sales by payment method
-- Best-selling menu items
-- Completed-order counts, totals, averages, and item quantities
-- Low-stock and out-of-stock inventory
-- Printable report views
-
-Phase 6 treats `stock_movements` as the audit trail for quantity changes. A non-zero initial quantity creates an addition record, and later quantities can change only through an addition or deduction transaction. Sales queries include only orders whose status is Completed; Pending, Preparing, Ready, and Cancelled orders do not contribute to sales totals.
-
-## Frontend Structure
-
-A suggested React structure is:
-
-```text
-src/
-  components/
-  layouts/
-  pages/
-    auth/
-    admin/
-    cashier/
-    kitchen/
-    reports/
-  services/
-  hooks/
-  context/
-  utils/
-  App.jsx
-  main.jsx
-```
-
-The `services` directory contains functions that communicate with the Express API. Pages should not directly access the database.
-
-## Backend Structure
-
-A suggested Express structure is:
-
-```text
-server/
-  src/
-    routes/
-    controllers/
-    services/
-    middleware/
-    database/
-    utils/
-    app.js
-  data/
-    restaurant.db
-```
-
-- Routes define the API addresses.
-- Controllers receive and validate requests.
-- Services contain business rules.
-- Middleware checks authentication and roles.
-- The database layer performs SQLite operations.
-
-## Core Database Tables
-
-| Table | Important Data |
-|---|---|
-| `users` | Name, username, password hash, role, active status |
-| `auth_sessions` | User, hashed session token, and expiration time |
-| `categories` | Category name and active status |
-| `menu_items` | Category, name, price, availability, active status |
-| `restaurant_tables` | Table number and availability status |
-| `orders` | Order number, type, table, status, totals, payment method, timestamps |
-| `order_items` | Order, menu item, quantity, unit price, subtotal, notes |
-| `inventory_items` | Item name, unit, quantity, and low-stock level |
-| `stock_movements` | Inventory item, movement type, quantity, date, and employee |
-
-Records used by previous transactions should normally be archived rather than permanently deleted.
-
-## Main Data Flow
-
-### Ordering Flow
-
-1. The cashier requests available menu items from the API.
-2. The React application builds the order and calculates a visible total.
-3. The backend validates the order and recalculates the final total.
-4. The backend saves the order and its items in one database transaction.
-5. The order appears in the kitchen queue.
-6. Kitchen staff update its status.
-7. The completed order becomes part of sales reports.
-
-### Inventory Flow
-
-1. The admin creates an inventory item and its low-stock level.
-2. Stock additions or deductions are recorded as movements.
-3. The server updates the current quantity.
-4. Items at or below their low-stock level appear in the warning list.
-
-## Offline Operation
-
-Offline operation means that the system does not depend on internet services. It does not mean that every browser keeps a separate copy of the database.
-
-The Express server and SQLite database act as the local source of truth. If several devices are used, they connect to the same server over the local network. This prevents separate devices from creating conflicting copies of orders and inventory.
-
-## Basic Security
-
-- Store password hashes, not plain-text passwords.
-- Validate all API input on the server.
-- Require authentication for protected operations.
-- Check the user's role on the server, not only in React.
-- Use parameterized database queries or an ORM.
-- Keep a record of the employee who created or updated important transactions.
-
-## Backup and Recovery
-
-- Use `npm run db:backup` for a consistent online backup that includes committed WAL data.
-- Stop the application before using `npm run db:restore -- <backup-file>`; restore validates the backup and preserves the current database first.
-- Add the current date and time to backup filenames.
-- Store at least one backup outside the main project directory.
-- Test that a backup can be restored before the final demonstration.
-
-## Out-of-Scope Architecture
-
-The initial version will not require:
-
-- Cloud hosting
-- React Native, Kotlin, or Swift applications
-- Real payment-gateway integration
-- Webhooks
-- SMS, email, or push-notification services
-- Multi-branch synchronization
-- Complex offline conflict resolution
+PostgreSQL uses a pooled connection for ordinary API traffic and a dedicated client for the duration of each transaction. SQLite serializes access to its shared connection while a transaction runs. Integration checks submit competing orders for one table and competing deductions against one stock balance. See the [deployment guide](docs/production-deployment.md) for the commands to run them.

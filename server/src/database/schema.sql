@@ -39,6 +39,12 @@ CREATE TABLE IF NOT EXISTS menu_items (
   FOREIGN KEY (category_id) REFERENCES categories(id)
 );
 
+CREATE TABLE IF NOT EXISTS menu_images (
+  menu_item_id INTEGER PRIMARY KEY REFERENCES menu_items(id) ON DELETE CASCADE,
+  version TEXT NOT NULL UNIQUE,
+  photo BLOB NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS restaurant_tables (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   table_number INTEGER NOT NULL UNIQUE,

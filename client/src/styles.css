@@ -690,3 +690,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .data-table { font-size: 9pt; }
   .data-table th, .data-table td { padding: 6px 7px; }
 }
+
+.menu-item-name { display: flex; align-items: center; gap: .75rem; }
+.menu-thumb, .menu-preview, .menu-card-photo { object-fit: cover; border-radius: .5rem; }
+.menu-thumb { width: 3rem; height: 3rem; }
+.menu-preview { width: 6rem; height: 4.5rem; }
+.menu-card-photo { width: 100%; aspect-ratio: 3 / 2; }
+.menu-photo-field { display: grid; gap: .75rem; }
+.menu-photo-field input { max-width: 100%; }

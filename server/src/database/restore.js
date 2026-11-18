@@ -112,7 +112,10 @@ async function restoreDatabaseFiles(targetPath, sourcePath) {
 const isMainModule = process.argv[1] &&
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
-if (isMainModule) {
+if (isMainModule && (process.env.DATABASE_URL || process.env.DATABASE_URL_UNPOOLED)) {
+  console.error('Use Neon restore or PostgreSQL backup tools for the configured PostgreSQL database.');
+  process.exitCode = 1;
+} else if (isMainModule) {
   restoreBackup({ backupPath: process.argv[2] })
     .then(({ databasePath, safetyBackup }) => {
       console.log(`Database restored: ${databasePath}`);

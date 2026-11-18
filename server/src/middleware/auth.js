@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { db } from '../database/connection.js';
+import { db } from '../database/queries.js';
 
 const SESSION_LENGTH_MS = 12 * 60 * 60 * 1000;
 
@@ -7,21 +7,21 @@ function hashToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
-export function createSession(userId) {
+export async function createSession(userId) {
   const token = crypto.randomBytes(32).toString('base64url');
   const expiresAt = new Date(Date.now() + SESSION_LENGTH_MS).toISOString();
 
-  db.prepare("DELETE FROM auth_sessions WHERE datetime(expires_at) <= datetime('now')").run();
-  db.prepare(`
+  await db.run("DELETE FROM auth_sessions WHERE expires_at <= ?", new Date().toISOString());
+  await db.run(`
     INSERT INTO auth_sessions (user_id, token_hash, expires_at)
     VALUES (?, ?, ?)
-  `).run(userId, hashToken(token), expiresAt);
+  `, userId, hashToken(token), expiresAt);
 
   return { token, expiresAt };
 }
 
-export function deleteSession(token) {
-  db.prepare('DELETE FROM auth_sessions WHERE token_hash = ?').run(hashToken(token));
+export async function deleteSession(token) {
+  await db.run('DELETE FROM auth_sessions WHERE token_hash = ?', hashToken(token));
 }
 
 function bearerToken(request) {
@@ -30,21 +30,21 @@ function bearerToken(request) {
   return match?.[1] ?? null;
 }
 
-export function authenticate(request, response, next) {
+export async function authenticate(request, response, next) {
   const token = bearerToken(request);
 
   if (!token) {
     return response.status(401).json({ error: 'Authentication is required.' });
   }
 
-  const user = db.prepare(`
+  const user = await db.get(`
     SELECT users.id, users.name, users.username, users.role
     FROM auth_sessions
     INNER JOIN users ON users.id = auth_sessions.user_id
     WHERE auth_sessions.token_hash = ?
-      AND datetime(auth_sessions.expires_at) > datetime('now')
+      AND auth_sessions.expires_at > ?
       AND users.is_active = 1
-  `).get(hashToken(token));
+  `, hashToken(token), new Date().toISOString());
 
   if (!user) {
     return response.status(401).json({ error: 'Your session is invalid or has expired.' });
@@ -56,7 +56,7 @@ export function authenticate(request, response, next) {
 }
 
 export function requireRoles(...roles) {
-  return (request, response, next) => {
+  return async (request, response, next) => {
     if (!roles.includes(request.user.role)) {
       return response.status(403).json({ error: 'You do not have permission to perform this action.' });
     }

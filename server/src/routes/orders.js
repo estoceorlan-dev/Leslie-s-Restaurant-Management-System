@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import express from 'express';
-import { db } from '../database/connection.js';
+import { db, postgres } from '../database/queries.js';
 import { authenticate, requireRoles } from '../middleware/auth.js';
 
 export const ordersRouter = express.Router();
@@ -21,17 +22,17 @@ const orderHeaderSelect = `
   LEFT JOIN restaurant_tables ON restaurant_tables.id = orders.table_id
 `;
 
-function getOrder(id) {
-  const order = db.prepare(`${orderHeaderSelect} WHERE orders.id = ?`).get(id);
+async function getOrder(id) {
+  const order = await db.get(`${orderHeaderSelect} WHERE orders.id = ?`, id);
   if (!order) return null;
 
-  order.items = db.prepare(`
+  order.items = await db.all(`
     SELECT id, menu_item_id, item_name, quantity, unit_price_cents,
       subtotal_cents, notes
     FROM order_items
     WHERE order_id = ?
     ORDER BY id
-  `).all(id);
+  `, id);
 
   return order;
 }
@@ -99,13 +100,13 @@ function parseOrder(body) {
   };
 }
 
-ordersRouter.get('/', (request, response) => {
+ordersRouter.get('/', async (request, response) => {
   const requestedLimit = Number(request.query.limit ?? 100);
   const limit = Number.isInteger(requestedLimit)
     ? Math.min(Math.max(requestedLimit, 1), 200)
     : 100;
 
-  const orders = db.prepare(`
+  const orders = await db.all(`
     SELECT orders.id, orders.order_number, orders.order_type,
       restaurant_tables.table_number, users.name AS cashier_name,
       orders.status, orders.payment_method, orders.total_cents,
@@ -115,16 +116,16 @@ ordersRouter.get('/', (request, response) => {
     INNER JOIN users ON users.id = orders.cashier_id
     LEFT JOIN restaurant_tables ON restaurant_tables.id = orders.table_id
     INNER JOIN order_items ON order_items.order_id = orders.id
-    GROUP BY orders.id
+    GROUP BY orders.id, restaurant_tables.table_number, users.name
     ORDER BY orders.id DESC
     LIMIT ?
-  `).all(limit);
+  `, limit);
 
   response.json({ data: orders });
 });
 
-ordersRouter.get('/status-feed', (_request, response) => {
-  const orders = db.prepare(`
+ordersRouter.get('/status-feed', async (_request, response) => {
+  const orders = await db.all(`
     SELECT orders.id, orders.order_number, orders.status,
       orders.order_type, restaurant_tables.table_number,
       orders.created_at, orders.updated_at
@@ -132,97 +133,87 @@ ordersRouter.get('/status-feed', (_request, response) => {
     LEFT JOIN restaurant_tables ON restaurant_tables.id = orders.table_id
     ORDER BY orders.id DESC
     LIMIT 200
-  `).all();
+  `);
 
   response.json({ data: orders });
 });
 
-ordersRouter.get('/:id', (request, response) => {
+ordersRouter.get('/:id', async (request, response) => {
   const id = Number(request.params.id);
   if (!Number.isInteger(id) || id < 1) {
     return response.status(400).json({ error: 'Invalid order id.' });
   }
 
-  const order = getOrder(id);
+  const order = await getOrder(id);
   if (!order) return response.status(404).json({ error: 'Order was not found.' });
   return response.json({ data: order });
 });
 
-ordersRouter.post('/', (request, response) => {
+ordersRouter.post('/', async (request, response) => {
   const parsed = parseOrder(request.body);
   if (parsed.error) return response.status(400).json({ error: parsed.error });
   const orderInput = parsed.value;
 
-  const findMenuItem = db.prepare(`
-    SELECT menu_items.id, menu_items.name, menu_items.price_cents
-    FROM menu_items
-    INNER JOIN categories ON categories.id = menu_items.category_id
-    WHERE menu_items.id = ?
-      AND menu_items.is_active = 1
-      AND menu_items.is_available = 1
-      AND categories.is_active = 1
-  `);
+  const saveOrder = async (tx) => {
+    const menuIds = orderInput.items.map((item) => item.menu_item_id);
+    const menu = await tx.all(`
+      SELECT menu_items.id, menu_items.name, menu_items.price_cents
+      FROM menu_items JOIN categories ON categories.id = menu_items.category_id
+      WHERE menu_items.id IN (${menuIds.map(() => '?').join(', ')})
+        AND menu_items.is_active = 1 AND menu_items.is_available = 1 AND categories.is_active = 1
+      ${postgres ? 'FOR SHARE' : ''}
+    `, ...menuIds);
+    const menuById = new Map(menu.map((item) => [item.id, item]));
+    let subtotalCents = 0;
+    const pricedItems = [];
+    for (const item of orderInput.items) {
+      const menuItem = menuById.get(item.menu_item_id);
+      if (!menuItem) {
+        return { status: 409, error: 'A selected menu item is no longer available. Refresh the menu and try again.' };
+      }
 
-  let subtotalCents = 0;
-  const pricedItems = [];
-  for (const item of orderInput.items) {
-    const menuItem = findMenuItem.get(item.menu_item_id);
-    if (!menuItem) {
-      return response.status(409).json({
-        error: 'A selected menu item is no longer available. Refresh the menu and try again.',
-      });
+      const itemSubtotal = menuItem.price_cents * item.quantity;
+      if (!Number.isSafeInteger(itemSubtotal) || !Number.isSafeInteger(subtotalCents + itemSubtotal)) {
+        return { status: 400, error: 'The order total is too large.' };
+      }
+      subtotalCents += itemSubtotal;
+      pricedItems.push({ ...item, ...menuItem, subtotal_cents: itemSubtotal });
     }
 
-    const itemSubtotal = menuItem.price_cents * item.quantity;
-    if (!Number.isSafeInteger(itemSubtotal) || !Number.isSafeInteger(subtotalCents + itemSubtotal)) {
-      return response.status(400).json({ error: 'The order total is too large.' });
+    if (
+      orderInput.payment_method === 'cash'
+      && orderInput.amount_received_cents < subtotalCents
+    ) {
+      return { status: 400, error: 'Cash received must cover the order total.' };
     }
-    subtotalCents += itemSubtotal;
-    pricedItems.push({ ...item, ...menuItem, subtotal_cents: itemSubtotal });
-  }
 
-  if (
-    orderInput.payment_method === 'cash'
-    && orderInput.amount_received_cents < subtotalCents
-  ) {
-    return response.status(400).json({ error: 'Cash received must cover the order total.' });
-  }
-
-  const saveOrder = db.transaction(() => {
     if (orderInput.order_type === 'dine_in') {
-      const table = db.prepare(`
+      const table = await tx.get(`
         SELECT id FROM restaurant_tables
-        WHERE id = ? AND is_active = 1 AND status = 'available'
-      `).get(orderInput.table_id);
-      const existingOrder = db.prepare(`
+        WHERE id = ? AND is_active = 1 AND status = 'available' ${postgres ? 'FOR UPDATE' : ''}
+      `, orderInput.table_id);
+      const existingOrder = await tx.get(`
         SELECT 1 FROM orders
         WHERE table_id = ? AND status IN (${activeOrderStatuses.map(() => '?').join(', ')})
-      `).get(orderInput.table_id, ...activeOrderStatuses);
+      `, orderInput.table_id, ...activeOrderStatuses);
 
       if (!table || existingOrder) {
-        const error = new Error('The selected table is no longer available.');
-        error.code = 'TABLE_UNAVAILABLE';
-        throw error;
+        return { status: 409, error: 'The selected table is no longer available.' };
       }
     }
 
-    const sequence = db.prepare(`
-      SELECT COALESCE((SELECT seq + 1 FROM sqlite_sequence WHERE name = 'orders'), 1) AS next_id
-    `).get().next_id;
     const datePart = new Date().toISOString().slice(0, 10).replaceAll('-', '');
-    const orderNumber = `ORD-${datePart}-${String(sequence).padStart(4, '0')}`;
     const changeCents = orderInput.payment_method === 'cash'
       ? orderInput.amount_received_cents - subtotalCents
       : 0;
 
-    const result = db.prepare(`
+    const result = await tx.get(`
       INSERT INTO orders (
         order_number, order_type, table_id, cashier_id, status,
         payment_method, subtotal_cents, total_cents,
         amount_received_cents, change_cents
-      ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
-    `).run(
-      orderNumber,
+      ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?) RETURNING id
+    `, randomUUID(),
       orderInput.order_type,
       orderInput.table_id,
       request.user.id,
@@ -230,18 +221,20 @@ ordersRouter.post('/', (request, response) => {
       subtotalCents,
       subtotalCents,
       orderInput.amount_received_cents,
-      changeCents,
-    );
+      changeCents);
 
-    const insertOrderItem = db.prepare(`
+    const orderNumber = `ORD-${datePart}-${String(result.id).padStart(4, '0')}`;
+    await tx.run('UPDATE orders SET order_number = ? WHERE id = ?', orderNumber, result.id);
+
+    const insertOrderItem = `
       INSERT INTO order_items (
         order_id, menu_item_id, item_name, quantity,
         unit_price_cents, subtotal_cents, notes
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-    pricedItems.forEach((item) => {
-      insertOrderItem.run(
-        result.lastInsertRowid,
+    `;
+    for (const item of pricedItems) {
+      await tx.run(insertOrderItem,
+        result.id,
         item.menu_item_id,
         item.name,
         item.quantity,
@@ -249,24 +242,18 @@ ordersRouter.post('/', (request, response) => {
         item.subtotal_cents,
         item.notes,
       );
-    });
+    }
 
     if (orderInput.table_id) {
-      db.prepare(`
+      await tx.run(`
         UPDATE restaurant_tables SET status = 'occupied' WHERE id = ?
-      `).run(orderInput.table_id);
+      `, orderInput.table_id);
     }
 
-    return Number(result.lastInsertRowid);
-  });
+    return { id: result.id };
+  };
 
-  try {
-    const orderId = saveOrder();
-    return response.status(201).json({ data: getOrder(orderId) });
-  } catch (error) {
-    if (error.code === 'TABLE_UNAVAILABLE') {
-      return response.status(409).json({ error: error.message });
-    }
-    throw error;
-  }
+  const result = await db.transaction(saveOrder);
+  if (result.error) return response.status(result.status).json({ error: result.error });
+  return response.status(201).json({ data: await getOrder(result.id) });
 });

@@ -67,10 +67,6 @@ export function AppShell({ user, activePage, onNavigate, onLogout, children }) {
             </button>
           ))}
         </nav>
-        <div className="sidebar-footer">
-          <span className="offline-dot" />
-          <div><strong>Local system</strong><small>Offline ready</small></div>
-        </div>
       </aside>
 
       <div className="workspace-main">

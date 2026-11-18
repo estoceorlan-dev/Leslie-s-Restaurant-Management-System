@@ -8,7 +8,7 @@
     "start": "node --env-file-if-exists=../.env src/server.js --production",
     "start:production": "node --env-file-if-exists=../.env src/server.js --production",
     "admin:create": "node --env-file-if-exists=../.env src/database/create-admin.js",
-    "db:init": "node --env-file-if-exists=../.env src/database/init.js",
+    "db:init": "node --env-file-if-exists=../.env src/database/setup.js",
     "db:backup": "node --env-file-if-exists=../.env src/database/backup.js",
     "db:restore": "node --env-file-if-exists=../.env src/database/restore.js",
     "check": "node src/check.js && node src/database/maintenance-check.js"
@@ -16,6 +16,9 @@
   "dependencies": {
     "bcryptjs": "^3.0.2",
     "better-sqlite3": "^12.2.0",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "pg": "^8.23.1",
+    "sharp": "^0.35.5",
+    "srvx": "^1.0.8"
   }
 }

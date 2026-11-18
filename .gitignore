@@ -42,3 +42,7 @@ pnpm-debug.log*
 Thumbs.db
 Desktop.ini
 credentials.md
+
+# Cloud project links and pulled secrets
+.neon
+.vercel/

@@ -24,7 +24,7 @@ async function request(path, options = {}) {
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const error = new Error(payload.error || 'The local server returned an error.');
+    const error = new Error(payload.error || 'The server returned an error.');
     error.status = response.status;
     throw error;
   }

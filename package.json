@@ -13,11 +13,13 @@
     "start:production": "npm run start:production --workspace server",
     "db:init": "npm run db:init --workspace server",
     "admin:create": "node --env-file-if-exists=.env server/src/database/create-admin.js",
+    "db:import-sqlite": "node --env-file-if-exists=.env server/src/database/import-sqlite.js",
     "db:backup": "node --env-file-if-exists=.env server/src/database/backup.js",
     "db:restore": "node --env-file-if-exists=.env server/src/database/restore.js",
     "check": "npm run build && npm run check --workspace server"
   },
   "devDependencies": {
+    "@neon/config": "^1.14.3",
     "concurrently": "^9.2.0"
   }
 }

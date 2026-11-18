@@ -115,6 +115,27 @@ async function main() {
   const confirmation = await hiddenPrompt('Confirm password: ');
   if (password !== confirmation) throw new Error('Passwords do not match.');
 
+  if (process.env.DATABASE_URL || process.env.DATABASE_URL_UNPOOLED) {
+    const { createPostgresDatabase } = await import('./postgres.js');
+    const database = createPostgresDatabase(process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL);
+    try {
+      const admin = validateInitialAdmin({ ...identity, password });
+      const hash = await bcrypt.hash(admin.password, 12);
+      await database.transaction(async (tx) => {
+        await tx.run('LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE');
+        if (await tx.get('SELECT 1 FROM users LIMIT 1')) {
+          throw new Error('An account already exists. Use employee management.');
+        }
+        await tx.run("INSERT INTO users (name, username, password_hash, role) VALUES (?, ?, ?, 'admin')",
+          admin.name, admin.username, hash);
+      });
+      console.log(`Administrator created: ${admin.name} (@${admin.username})`);
+    } finally {
+      await database.close();
+    }
+    return;
+  }
+
   const releaseServerLock = acquireServerLock(config.databasePath);
   let database;
   try {

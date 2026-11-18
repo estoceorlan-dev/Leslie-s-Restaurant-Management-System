@@ -32,9 +32,8 @@ export function LoginPage({ onLogin }) {
         <div className="story-copy">
           <p className="eyebrow">Serve with confidence</p>
           <h1>Everything your team needs, right where you need it.</h1>
-          <p>Manage your menu, people, and dining room from one dependable local workspace.</p>
+          <p>Manage your menu, people, and dining room from one workspace.</p>
         </div>
-        <div className="story-status"><span className="offline-dot" /> Local system · Offline ready</div>
       </section>
 
       <section className="login-panel">

@@ -1,5 +1,5 @@
 import express from 'express';
-import { db } from '../database/connection.js';
+import { db } from '../database/queries.js';
 import { authenticate, requireRoles } from '../middleware/auth.js';
 
 export const kitchenRouter = express.Router();
@@ -12,8 +12,8 @@ const nextStatus = {
   ready: 'completed',
 };
 
-function getQueue() {
-  const orders = db.prepare(`
+async function getQueue() {
+  const orders = await db.all(`
     SELECT orders.id, orders.order_number, orders.order_type, orders.table_id,
       restaurant_tables.table_number, orders.status, orders.created_at,
       orders.updated_at
@@ -28,18 +28,18 @@ function getQueue() {
       END,
       orders.created_at,
       orders.id
-  `).all();
+  `);
 
   if (orders.length === 0) return orders;
 
   const orderIds = orders.map((order) => order.id);
   const placeholders = orderIds.map(() => '?').join(', ');
-  const items = db.prepare(`
+  const items = await db.all(`
     SELECT id, order_id, item_name, quantity, notes
     FROM order_items
     WHERE order_id IN (${placeholders})
     ORDER BY order_id, id
-  `).all(...orderIds);
+  `, ...orderIds);
   const itemsByOrder = new Map();
 
   items.forEach((item) => {
@@ -59,11 +59,11 @@ function getQueue() {
   }));
 }
 
-kitchenRouter.get('/orders', (_request, response) => {
-  response.json({ data: getQueue() });
+kitchenRouter.get('/orders', async (_request, response) => {
+  response.json({ data: await getQueue() });
 });
 
-kitchenRouter.put('/orders/:id/status', (request, response) => {
+kitchenRouter.put('/orders/:id/status', async (request, response) => {
   const id = Number(request.params.id);
   if (!Number.isInteger(id) || id < 1) {
     return response.status(400).json({ error: 'Invalid order id.' });
@@ -76,11 +76,11 @@ kitchenRouter.put('/orders/:id/status', (request, response) => {
     });
   }
 
-  const updateStatus = db.transaction(() => {
-    const order = db.prepare(`
+  const updateStatus = async (tx) => {
+    const order = await tx.get(`
       SELECT id, order_number, order_type, table_id, status
       FROM orders WHERE id = ?
-    `).get(id);
+    `, id);
 
     if (!order) {
       const error = new Error('Order was not found.');
@@ -102,20 +102,20 @@ kitchenRouter.put('/orders/:id/status', (request, response) => {
       throw error;
     }
 
-    const update = db.prepare(`
+    const update = await tx.run(`
       UPDATE orders
       SET status = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ? AND status = ?
-    `).run(requestedStatus, id, order.status);
+    `, requestedStatus, id, order.status);
 
-    if (update.changes !== 1) {
+    if (update !== 1) {
       const error = new Error('The order changed on another screen. Refresh the queue and try again.');
       error.code = 'STALE_ORDER';
       throw error;
     }
 
     if (requestedStatus === 'completed' && order.table_id) {
-      db.prepare(`
+      await tx.run(`
         UPDATE restaurant_tables
         SET status = 'available'
         WHERE id = ?
@@ -124,21 +124,21 @@ kitchenRouter.put('/orders/:id/status', (request, response) => {
             WHERE table_id = ?
               AND status IN ('pending', 'preparing', 'ready')
           )
-      `).run(order.table_id, order.table_id);
+      `, order.table_id, order.table_id);
     }
 
-    return db.prepare(`
+    return tx.get(`
       SELECT orders.id, orders.order_number, orders.order_type,
         restaurant_tables.table_number, orders.status,
         orders.created_at, orders.updated_at
       FROM orders
       LEFT JOIN restaurant_tables ON restaurant_tables.id = orders.table_id
       WHERE orders.id = ?
-    `).get(id);
-  });
+    `, id);
+  };
 
   try {
-    return response.json({ data: updateStatus() });
+    return response.json({ data: await db.transaction(updateStatus) });
   } catch (error) {
     if (error.code === 'ORDER_NOT_FOUND') {
       return response.status(404).json({ error: error.message });

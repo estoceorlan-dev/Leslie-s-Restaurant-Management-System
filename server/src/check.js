@@ -8,17 +8,17 @@ import path from 'node:path';
 const temporaryDirectory = fs.mkdtempSync(
   path.join(os.tmpdir(), 'leslies-integration-check-'),
 );
+delete process.env.DATABASE_URL;
+delete process.env.DATABASE_URL_UNPOOLED;
 process.env.DATABASE_PATH = path.join(temporaryDirectory, 'restaurant.db');
 
 const [
-  { app },
   { db },
   { databaseCounts, initializeDatabase },
   { createInitialAdmin },
   { assertProductionReady },
   { config },
 ] = await Promise.all([
-  import('./app.js'),
   import('./database/connection.js'),
   import('./database/init.js'),
   import('./database/create-admin.js'),
@@ -128,17 +128,24 @@ const lowStockItems = db.prepare(
 ).get().count;
 assert.ok(lowStockItems >= 1, 'Expected at least one check-only low-stock item.');
 
+const postgresUrl = process.env.TEST_POSTGRES_URL;
+const closeFixture = postgresUrl
+  ? await (await import('./database/postgres-check-fixture.js')).postgresFixture(postgresUrl, db)
+  : null;
+const { app } = await import('./app.js');
+const { db: queries } = await import('./database/queries.js');
+const functionHandler = postgresUrl ? (await import('./function.js')).default : null;
 const server = app.listen(0, '127.0.0.1');
 await once(server, 'listening');
 
 const createdIds = { orders: [] };
-const issuedTokens = [];
+
 
 try {
   const address = server.address();
   const baseUrl = `http://127.0.0.1:${address.port}`;
   const request = async (path, { token, method = 'GET', body } = {}) => {
-    const response = await fetch(`${baseUrl}/api${path}`, {
+    const input = new Request(`${baseUrl}/api${path}`, {
       method,
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -146,6 +153,7 @@ try {
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
+    const response = functionHandler ? await functionHandler.fetch(input) : await fetch(input);
     const payload = response.status === 204 ? null : await response.json();
     return { response, payload };
   };
@@ -156,13 +164,12 @@ try {
       body: { username, password },
     });
     assert.equal(result.response.status, 200, `${username} should be able to log in.`);
-    issuedTokens.push(result.payload.data.token);
     return result.payload.data;
   };
 
   const healthResult = await request('/health');
   assert.equal(healthResult.response.status, 200, 'Health endpoint should return 200.');
-  assert.equal(healthResult.payload.database, 'SQLite connected');
+  assert.equal(healthResult.payload.database, postgresUrl ? 'PostgreSQL connected' : 'SQLite connected');
 
   const applicationResult = await fetch(baseUrl);
   assert.equal(applicationResult.status, 200, 'Express should serve the built React application.');
@@ -226,10 +233,14 @@ try {
   assert.equal(categoryResult.response.status, 201, 'Admin should create a category.');
   createdIds.category = categoryResult.payload.data.id;
 
+  const samplePhoto = (await (await import('sharp')).default({
+    create: { width: 2, height: 2, channels: 3, background: '#cca060' },
+  }).png().toBuffer()).toString('base64');
   const menuItemResult = await request('/admin/menu-items', {
     token: adminSession.token,
     method: 'POST',
     body: {
+      photo: samplePhoto,
       name: `Verification Meal ${suffix}`,
       category_id: createdIds.category,
       price_cents: 12345,
@@ -240,6 +251,28 @@ try {
   assert.equal(menuItemResult.response.status, 201, 'Admin should create a menu item.');
   assert.equal(menuItemResult.payload.data.price_cents, 12345);
   createdIds.menuItem = menuItemResult.payload.data.id;
+
+  const originalVersion = menuItemResult.payload.data.photo_version;
+  assert.ok(originalVersion);
+  const photoPath = '/api/menu-photos/' + originalVersion;
+  const imageRequest = new Request(baseUrl + photoPath);
+  const image = functionHandler ? await functionHandler.fetch(imageRequest) : await fetch(imageRequest);
+  assert.equal(image.headers.get('content-type'), 'image/webp');
+  assert.equal(Buffer.from(await image.arrayBuffer()).toString('ascii', 8, 12), 'WEBP');
+  const menu = await request('/menu-items', { token: cashierSession.token });
+  assert.equal(menu.payload.data.find((item) => item.id === createdIds.menuItem).photo_version, originalVersion);
+  const editPhoto = (photo, token = adminSession.token) => request('/admin/menu-items/' + createdIds.menuItem, {
+    method: 'PUT', token, body: { ...menuItemResult.payload.data, photo, is_active: true, is_available: true },
+  });
+  assert.equal((await editPhoto(null, cashierSession.token)).response.status, 403);
+  assert.equal((await editPhoto('bm90LWEtcGhvdG8=')).response.status, 400);
+  assert.equal((await editPhoto(Buffer.alloc(2 * 1024 * 1024 + 1).toString('base64'))).response.status, 400);
+  assert.equal((await editPhoto(undefined)).payload.data.photo_version, originalVersion);
+  const replaced = await editPhoto(samplePhoto);
+  assert.equal(replaced.response.status, 200);
+  assert.notEqual(replaced.payload.data.photo_version, originalVersion);
+  assert.equal((await fetch(baseUrl + photoPath)).status, 404);
+  assert.equal((await editPhoto(null)).payload.data.photo_version, null);
 
   const tableResult = await request('/admin/tables', {
     token: adminSession.token,
@@ -333,7 +366,7 @@ try {
   });
   assert.equal(underpaidOrder.response.status, 400, 'Underpaid cash orders must be rejected.');
 
-  const cashOrder = await request('/orders', {
+  const placeOrder = () => request('/orders', {
     token: cashierSession.token,
     method: 'POST',
     body: {
@@ -348,14 +381,16 @@ try {
       ],
     },
   });
-  assert.equal(cashOrder.response.status, 201, 'Cashier should save a dine-in cash order.');
+  const competingOrders = await Promise.all([placeOrder(), placeOrder()]);
+  assert.deepEqual(competingOrders.map((order) => order.response.status).sort(), [201, 409]);
+  const cashOrder = competingOrders.find((order) => order.response.status === 201);
   createdIds.orders.push(cashOrder.payload.data.id);
   assert.equal(cashOrder.payload.data.total_cents, expectedCashTotal, 'The server must calculate the total.');
   assert.equal(cashOrder.payload.data.change_cents, 5000, 'The server must calculate cash change.');
   assert.equal(cashOrder.payload.data.items.length, 2, 'Order lines must be saved together.');
   assert.equal(cashOrder.payload.data.items[0].notes, 'Verification note');
   assert.equal(
-    db.prepare('SELECT status FROM restaurant_tables WHERE id = ?').get(availableTable.id).status,
+    (await queries.get('SELECT status FROM restaurant_tables WHERE id = ?', availableTable.id)).status,
     'occupied',
     'Saving a dine-in order must persist the occupied table status.',
   );
@@ -454,7 +489,7 @@ try {
     assert.equal(statusUpdate.response.status, 200, `Kitchen staff should mark an order ${status}.`);
     assert.equal(statusUpdate.payload.data.status, status);
     assert.equal(
-      db.prepare('SELECT status FROM restaurant_tables WHERE id = ?').get(availableTable.id).status,
+      (await queries.get('SELECT status FROM restaurant_tables WHERE id = ?', availableTable.id)).status,
       'occupied',
       'A dine-in table must remain occupied until completion.',
     );
@@ -479,7 +514,7 @@ try {
   assert.equal(completedOrder.response.status, 200, 'Kitchen staff should complete a ready order.');
   assert.equal(completedOrder.payload.data.status, 'completed');
   assert.equal(
-    db.prepare('SELECT status FROM restaurant_tables WHERE id = ?').get(availableTable.id).status,
+    (await queries.get('SELECT status FROM restaurant_tables WHERE id = ?', availableTable.id)).status,
     'available',
     'Completing a dine-in order must persist the available table status.',
   );
@@ -611,22 +646,23 @@ try {
     'Non-zero initial stock must create a movement record.',
   );
 
-  const stockDeduction = await request(
+  const deductStock = () => request(
     `/inventory/items/${createdIds.inventoryItem}/movements`,
     {
       token: adminSession.token,
       method: 'POST',
-      body: { movement_type: 'deduction', quantity: 4, notes: 'Verification usage' },
+      body: { movement_type: 'deduction', quantity: 6, notes: 'Verification usage' },
     },
   );
-  assert.equal(stockDeduction.response.status, 201, 'Administrators should deduct stock.');
-  assert.equal(stockDeduction.payload.data.item.quantity, 6);
+  const deductions = await Promise.all([deductStock(), deductStock()]);
+  assert.deepEqual(deductions.map((entry) => entry.response.status).sort(), [201, 409]);
+  assert.equal(deductions.find((entry) => entry.response.status === 201).payload.data.item.quantity, 4);
   const stockAddition = await request(
     `/inventory/items/${createdIds.inventoryItem}/movements`,
     {
       token: adminSession.token,
       method: 'POST',
-      body: { movement_type: 'addition', quantity: 2.5, notes: 'Verification delivery' },
+      body: { movement_type: 'addition', quantity: 4.5, notes: 'Verification delivery' },
     },
   );
   assert.equal(stockAddition.response.status, 201, 'Administrators should add stock.');
@@ -642,7 +678,7 @@ try {
   );
   assert.equal(excessiveDeduction.response.status, 409, 'Stock cannot be deducted below zero.');
   assert.equal(
-    db.prepare('SELECT quantity FROM inventory_items WHERE id = ?').get(createdIds.inventoryItem).quantity,
+    (await queries.get('SELECT quantity FROM inventory_items WHERE id = ?', createdIds.inventoryItem)).quantity,
     8.5,
     'A rejected deduction must not change the stored quantity.',
   );
@@ -707,7 +743,10 @@ try {
   const revoked = await request('/auth/me', { token: adminSession.token });
   assert.equal(revoked.response.status, 401, 'Logged-out tokens must be rejected.');
 
-  console.log('Frontend build, Phase 6 inventory and reporting checks passed:', {
+  console.log('Restaurant integration checks passed:', {
+    database: postgresUrl ? 'PostgreSQL' : 'SQLite',
+    menuPhotoLifecycle: 'passed',
+    concurrentOrdersAndStockDeductions: 'passed',
     ...counts,
     lowStockItems,
     authentication: 'passed',
@@ -723,33 +762,13 @@ try {
     productionStaticServing: 'passed',
   });
 } finally {
-  if (createdIds.inventoryItem) {
-    db.prepare('DELETE FROM stock_movements WHERE inventory_item_id = ?').run(createdIds.inventoryItem);
-    db.prepare('DELETE FROM inventory_items WHERE id = ?').run(createdIds.inventoryItem);
-  }
-  createdIds.orders.forEach((id) => db.prepare('DELETE FROM orders WHERE id = ?').run(id));
-  db.prepare(`
-    UPDATE restaurant_tables
-    SET status = 'available'
-    WHERE NOT EXISTS (
-      SELECT 1 FROM orders
-      WHERE orders.table_id = restaurant_tables.id
-        AND orders.status IN ('pending', 'preparing', 'ready')
-    )
-  `).run();
-  if (createdIds.menuItem) db.prepare('DELETE FROM menu_items WHERE id = ?').run(createdIds.menuItem);
-  if (createdIds.category) db.prepare('DELETE FROM categories WHERE id = ?').run(createdIds.category);
-  if (createdIds.table) db.prepare('DELETE FROM restaurant_tables WHERE id = ?').run(createdIds.table);
-  if (createdIds.employee) db.prepare('DELETE FROM users WHERE id = ?').run(createdIds.employee);
-  const removeSession = db.prepare('DELETE FROM auth_sessions WHERE token_hash = ?');
-  issuedTokens.forEach((token) => {
-    const hash = crypto.createHash('sha256').update(token).digest('hex');
-    removeSession.run(hash);
-  });
-
   await new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
+  if (closeFixture) {
+    await queries.close();
+    await closeFixture();
+  }
   db.close();
   fs.rmSync(temporaryDirectory, { recursive: true, force: true });
 }

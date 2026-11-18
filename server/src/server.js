@@ -22,21 +22,24 @@ function accessibleUrls() {
 
 async function startServer() {
   const productionMode = process.argv.includes('--production');
-  const releaseServerLock = acquireServerLock(config.databasePath);
+  const postgres = Boolean(process.env.DATABASE_URL);
+  const releaseServerLock = postgres ? () => {} : acquireServerLock(config.databasePath);
   let db;
   let server;
 
   try {
-    const databaseModule = await import('./database/connection.js');
-    db = databaseModule.db;
-    const [{ app }, { initializeDatabase }] = await Promise.all([
-      import('./app.js'),
-      import('./database/init.js'),
-    ]);
-    initializeDatabase();
-    assertProductionReady(db, config.clientDistPath, {
-      requireClientBuild: productionMode,
-    });
+    const { app } = await import('./app.js');
+    if (postgres) {
+      ({ db } = await import('./database/queries.js'));
+      if (!await db.get("SELECT 1 FROM users WHERE role = 'admin' AND is_active = 1 LIMIT 1")) {
+        throw new Error('Run npm run admin:create before starting the server.');
+      }
+    } else {
+      ({ db } = await import('./database/connection.js'));
+      const { initializeDatabase } = await import('./database/init.js');
+      initializeDatabase(db);
+      assertProductionReady(db, config.clientDistPath, { requireClientBuild: productionMode });
+    }
 
     server = app.listen({ host: config.host, port: config.port });
     await new Promise((resolve, reject) => {
@@ -52,14 +55,14 @@ async function startServer() {
       server.once('error', handleError);
     });
   } catch (error) {
-    if (db?.open) db.close();
+    if (postgres || db?.open) await db?.close();
     releaseServerLock();
     throw error;
   }
 
   console.log("Leslie's Restaurant Management System is ready.");
   accessibleUrls().forEach((url) => console.log(`  ${url}`));
-  console.log(`Database: ${config.databasePath}`);
+  console.log(`Database: ${postgres ? "PostgreSQL" : config.databasePath}`);
 
   let shuttingDown = false;
   const shutdown = (signal) => {
@@ -72,12 +75,13 @@ async function startServer() {
     }, 10_000);
     forceCloseTimer.unref();
 
-    server.close((serverError) => {
+    server.close(async (serverError) => {
       clearTimeout(forceCloseTimer);
       let shutdownError = serverError;
 
       try {
-        if (db.open) {
+        if (postgres) await db.close();
+        else if (db.open) {
           db.pragma('wal_checkpoint(TRUNCATE)');
           db.close();
         }

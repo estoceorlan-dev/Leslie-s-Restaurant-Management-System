@@ -1,5 +1,5 @@
 import express from 'express';
-import { db } from '../database/connection.js';
+import { db, postgres } from '../database/queries.js';
 import { authenticate, requireRoles } from '../middleware/auth.js';
 
 export const inventoryRouter = express.Router();
@@ -15,7 +15,7 @@ const inventoryItemSelect = `
     inventory_items.quantity, inventory_items.low_stock_level,
     inventory_items.is_active, inventory_items.created_at,
     inventory_items.updated_at,
-    inventory_items.quantity <= inventory_items.low_stock_level AS is_low_stock,
+    CAST(inventory_items.quantity <= inventory_items.low_stock_level AS INTEGER) AS is_low_stock,
     (SELECT COUNT(*) FROM stock_movements
       WHERE stock_movements.inventory_item_id = inventory_items.id) AS movement_count,
     (SELECT MAX(created_at) FROM stock_movements
@@ -23,8 +23,8 @@ const inventoryItemSelect = `
   FROM inventory_items
 `;
 
-function getInventoryItem(id) {
-  return db.prepare(`${inventoryItemSelect} WHERE inventory_items.id = ?`).get(id);
+function getInventoryItem(id, connection = db) {
+  return connection.get(`${inventoryItemSelect} WHERE inventory_items.id = ?`, id);
 }
 
 function parseQuantity(value, label, { allowZero = true } = {}) {
@@ -79,59 +79,59 @@ function parseInventoryItem(body, { creating = false } = {}) {
   };
 }
 
-inventoryRouter.get('/items', (_request, response) => {
-  const items = db.prepare(`
+inventoryRouter.get('/items', async (_request, response) => {
+  const items = await db.all(`
     ${inventoryItemSelect}
     ORDER BY inventory_items.is_active DESC,
       is_low_stock DESC,
-      inventory_items.name COLLATE NOCASE
-  `).all();
+      lower(inventory_items.name)
+  `);
   response.json({ data: items });
 });
 
-inventoryRouter.post('/items', (request, response) => {
+inventoryRouter.post('/items', async (request, response) => {
   const parsed = parseInventoryItem(request.body, { creating: true });
   if (parsed.error) return response.status(400).json({ error: parsed.error });
   const item = parsed.value;
 
-  if (db.prepare('SELECT 1 FROM inventory_items WHERE name = ? COLLATE NOCASE').get(item.name)) {
+  if (await db.get('SELECT 1 FROM inventory_items WHERE lower(name) = lower(?)', item.name)) {
     return response.status(409).json({ error: 'Inventory item name is already in use.' });
   }
 
-  const createItem = db.transaction(() => {
-    const result = db.prepare(`
+  const createItem = async (tx) => {
+    const result = await tx.get(`
       INSERT INTO inventory_items
         (name, unit, quantity, low_stock_level, is_active)
-      VALUES (?, ?, 0, ?, ?)
-    `).run(item.name, item.unit, item.low_stock_level, item.is_active);
-    const id = Number(result.lastInsertRowid);
+      VALUES (?, ?, 0, ?, ?) RETURNING id
+    `, item.name, item.unit, item.low_stock_level, item.is_active);
+    const id = Number(result.id);
 
     if (item.quantity > 0) {
-      db.prepare(`
+      await tx.run(`
         INSERT INTO stock_movements
           (inventory_item_id, user_id, movement_type, quantity, notes)
         VALUES (?, ?, 'addition', ?, 'Initial stock')
-      `).run(id, request.user.id, item.quantity);
-      db.prepare(`
+      `, id, request.user.id, item.quantity);
+      await tx.run(`
         UPDATE inventory_items
         SET quantity = ?, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
-      `).run(item.quantity, id);
+      `, item.quantity, id);
     }
 
     return id;
-  });
+  };
 
-  const id = createItem();
-  return response.status(201).json({ data: getInventoryItem(id) });
+  const id = await db.transaction(createItem);
+  return response.status(201).json({ data: await getInventoryItem(id) });
 });
 
-inventoryRouter.put('/items/:id', (request, response) => {
+inventoryRouter.put('/items/:id', async (request, response) => {
   const id = Number(request.params.id);
   if (!Number.isInteger(id) || id < 1) {
     return response.status(400).json({ error: 'Invalid inventory item id.' });
   }
-  if (!getInventoryItem(id)) {
+  if (!await getInventoryItem(id)) {
     return response.status(404).json({ error: 'Inventory item was not found.' });
   }
 
@@ -139,24 +139,24 @@ inventoryRouter.put('/items/:id', (request, response) => {
   if (parsed.error) return response.status(400).json({ error: parsed.error });
   const item = parsed.value;
 
-  if (db.prepare(`
+  if (await db.get(`
     SELECT 1 FROM inventory_items
-    WHERE name = ? COLLATE NOCASE AND id <> ?
-  `).get(item.name, id)) {
+    WHERE lower(name) = lower(?) AND id <> ?
+  `, item.name, id)) {
     return response.status(409).json({ error: 'Inventory item name is already in use.' });
   }
 
-  db.prepare(`
+  await db.run(`
     UPDATE inventory_items
     SET name = ?, unit = ?, low_stock_level = ?, is_active = ?,
       updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
-  `).run(item.name, item.unit, item.low_stock_level, item.is_active, id);
+  `, item.name, item.unit, item.low_stock_level, item.is_active, id);
 
-  return response.json({ data: getInventoryItem(id) });
+  return response.json({ data: await getInventoryItem(id) });
 });
 
-inventoryRouter.get('/movements', (request, response) => {
+inventoryRouter.get('/movements', async (request, response) => {
   const requestedLimit = Number(request.query.limit ?? 200);
   const limit = Number.isInteger(requestedLimit)
     ? Math.min(Math.max(requestedLimit, 1), 500)
@@ -169,7 +169,7 @@ inventoryRouter.get('/movements', (request, response) => {
   }
 
   const movements = itemId === null
-    ? db.prepare(`
+    ? await db.all(`
         SELECT stock_movements.id, stock_movements.inventory_item_id,
           inventory_items.name AS item_name, inventory_items.unit,
           stock_movements.movement_type, stock_movements.quantity,
@@ -180,8 +180,8 @@ inventoryRouter.get('/movements', (request, response) => {
         INNER JOIN users ON users.id = stock_movements.user_id
         ORDER BY stock_movements.id DESC
         LIMIT ?
-      `).all(limit)
-    : db.prepare(`
+      `, limit)
+    : await db.all(`
         SELECT stock_movements.id, stock_movements.inventory_item_id,
           inventory_items.name AS item_name, inventory_items.unit,
           stock_movements.movement_type, stock_movements.quantity,
@@ -193,12 +193,12 @@ inventoryRouter.get('/movements', (request, response) => {
         WHERE stock_movements.inventory_item_id = ?
         ORDER BY stock_movements.id DESC
         LIMIT ?
-      `).all(itemId, limit);
+      `, itemId, limit);
 
   return response.json({ data: movements });
 });
 
-inventoryRouter.post('/items/:id/movements', (request, response) => {
+inventoryRouter.post('/items/:id/movements', async (request, response) => {
   const id = Number(request.params.id);
   if (!Number.isInteger(id) || id < 1) {
     return response.status(400).json({ error: 'Invalid inventory item id.' });
@@ -219,10 +219,10 @@ inventoryRouter.post('/items/:id/movements', (request, response) => {
     return response.status(400).json({ error: 'Movement notes cannot exceed 250 characters.' });
   }
 
-  const recordMovement = db.transaction(() => {
-    const current = db.prepare(`
-      SELECT id, quantity, is_active FROM inventory_items WHERE id = ?
-    `).get(id);
+  const recordMovement = async (tx) => {
+    const current = await tx.get(`
+      SELECT id, quantity, is_active FROM inventory_items WHERE id = ? ${postgres ? 'FOR UPDATE' : ''}
+    `, id);
     if (!current) {
       const error = new Error('Inventory item was not found.');
       error.code = 'ITEM_NOT_FOUND';
@@ -243,18 +243,18 @@ inventoryRouter.post('/items/:id/movements', (request, response) => {
       throw error;
     }
 
-    db.prepare(`
+    await tx.run(`
       UPDATE inventory_items
       SET quantity = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(newQuantity, id);
-    const result = db.prepare(`
+    `, newQuantity, id);
+    const result = await tx.get(`
       INSERT INTO stock_movements
         (inventory_item_id, user_id, movement_type, quantity, notes)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(id, request.user.id, movementType, quantity, notes || null);
+      VALUES (?, ?, ?, ?, ?) RETURNING id
+    `, id, request.user.id, movementType, quantity, notes || null);
 
-    const movement = db.prepare(`
+    const movement = await tx.get(`
       SELECT stock_movements.id, stock_movements.inventory_item_id,
         inventory_items.name AS item_name, inventory_items.unit,
         stock_movements.movement_type, stock_movements.quantity,
@@ -264,13 +264,13 @@ inventoryRouter.post('/items/:id/movements', (request, response) => {
       INNER JOIN inventory_items ON inventory_items.id = stock_movements.inventory_item_id
       INNER JOIN users ON users.id = stock_movements.user_id
       WHERE stock_movements.id = ?
-    `).get(result.lastInsertRowid);
+    `, result.id);
 
-    return { item: getInventoryItem(id), movement };
-  });
+    return { item: await getInventoryItem(id, tx), movement };
+  };
 
   try {
-    return response.status(201).json({ data: recordMovement() });
+    return response.status(201).json({ data: await db.transaction(recordMovement) });
   } catch (error) {
     if (error.code === 'ITEM_NOT_FOUND') {
       return response.status(404).json({ error: error.message });
