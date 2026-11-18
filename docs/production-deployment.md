@@ -2,6 +2,8 @@
 
 ## Vercel and Neon
 
+The production frontend is [leslies-restaurant.vercel.app](https://leslies-restaurant.vercel.app). It uses the `leslies-restaurant` Vercel project and the Neon `restaurant` function on the production branch.
+
 Vercel hosts the frontend. Neon hosts the restaurant API and PostgreSQL database. Set up Neon first so you have the API address when Vercel asks for its environment variables.
 
 ### 1. Create the Neon project

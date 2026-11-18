@@ -2,6 +2,8 @@
 
 A cashier takes an order, the kitchen prepares it, and the manager sees the completed sale. Leslie's is a full-stack restaurant application that connects those three desks through a shared order record. It supports dine-in and takeout service, Philippine peso pricing, and printable receipts.
 
+[Open the app](https://leslies-restaurant.vercel.app)
+
 ![Cashier selecting a table and recording a ₱335 order with ₱500 received and ₱165 in change](docs/assets/cashier-order.png)
 
 *Cashier workspace with sample menu items. Selecting a table, entering item notes, and recording payment all happen on this screen.*
